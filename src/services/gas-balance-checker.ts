@@ -1,20 +1,7 @@
 import { ethers } from 'ethers';
 import { config } from '../config/env';
-import { prisma } from '../config/database';
 
-// Native Polygon token (MATIC) - used for gas
 const MATIC_ADDRESS = ethers.constants.AddressZero; // Native token
-const MATIC_DECIMALS = 18;
-
-// USDC addresses (in case gas is paid with USDC)
-const USDC_NATIVE_ADDRESS = config.blockchain.usdcAddress || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const USDC_DECIMALS = 6;
-
-// ERC20 ABI (minimal - just balanceOf)
-const ERC20_ABI = [
-  'function balanceOf(address owner) view returns (uint256)',
-  'function decimals() view returns (uint8)',
-];
 
 export interface GasBalanceInfo {
   relayerAddress: string; // Relayer wallet address (pays for gas)
@@ -144,7 +131,7 @@ export async function getRelayerGasBalanceInfoFromConfig(): Promise<GasBalanceIn
  * @returns Gas balance information for the relayer wallet
  */
 export async function getUserGasBalanceInfo(
-  userAddress: string
+  _userAddress: string
 ): Promise<GasBalanceInfo | null> {
   // Gas is paid by relayer, not user Safe wallets
   return await getRelayerGasBalanceInfoFromConfig();

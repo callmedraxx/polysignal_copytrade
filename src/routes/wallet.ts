@@ -5,9 +5,8 @@ import { redeemPositions, needsRedemption } from '../services/position-redemptio
 import { withdrawUSDC, withdrawConditionalToken, getProxyWalletBalances } from '../services/withdrawal';
 import { prisma } from '../config/database';
 import { ethers } from 'ethers';
-import { config } from '../config/env';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * @swagger

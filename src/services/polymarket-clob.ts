@@ -1,6 +1,7 @@
 import { ClobClient, Side } from '@polymarket/clob-client';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
+import { getClobProxyAgent, isClobProxyEnabled } from '../utils/proxy-agent';
 
 const CLOB_API_URL = config.polymarket.clobApiUrl || 'https://clob.polymarket.com';
 /**
@@ -171,7 +172,83 @@ export async function submitOrder(
     
     let response;
     try {
-      response = await clobClient.postOrder(order);
+      // Use proxy only for order submission if enabled
+      // Prefer CLOB-specific proxy (for local machine routing) over general proxy (Oxylabs)
+      // The @polymarket/clob-client uses axios internally, which uses Node.js http/https modules
+      // We need to patch https.request to inject the proxy agent
+      let axiosPatched = false;
+      let originalHttpsRequest: any;
+      let originalHttpRequest: any;
+      
+      if (isClobProxyEnabled()) {
+        const agent = getClobProxyAgent();
+        if (agent) {
+          try {
+            // Patch Node.js https.request to use proxy agent for CLOB API requests
+            // This works because axios uses Node.js http/https modules internally
+            const https = require('https');
+            const http = require('http');
+            
+            // Store original functions
+            originalHttpsRequest = https.request;
+            originalHttpRequest = http.request;
+            
+            // Patch https.request to use proxy agent for CLOB API requests
+            https.request = function(options: any, callback?: any) {
+              // Only use proxy for CLOB API requests
+              if (options.hostname === 'clob.polymarket.com' || 
+                  (options.host && options.host.includes('clob.polymarket.com'))) {
+                options.agent = agent;
+                logger.debug('Using proxy agent for CLOB request', {
+                  hostname: options.hostname,
+                  host: options.host,
+                });
+              }
+              return originalHttpsRequest.call(this, options, callback);
+            };
+            
+            // Also patch http.request (though CLOB uses HTTPS)
+            http.request = function(options: any, callback?: any) {
+              if (options.hostname === 'clob.polymarket.com' || 
+                  (options.host && options.host.includes('clob.polymarket.com'))) {
+                options.agent = agent;
+              }
+              return originalHttpRequest.call(this, options, callback);
+            };
+            
+            axiosPatched = true;
+            const proxyType = config.proxy?.clobProxyUrl ? 'CLOB-specific (local machine)' : 'general (Oxylabs)';
+            logger.info('Using proxy for order submission', {
+              proxyEnabled: true,
+              proxyType,
+              method: 'https.request patch',
+            });
+          } catch (patchError) {
+            logger.warn('Failed to patch https.request for proxy', {
+              error: patchError instanceof Error ? patchError.message : 'Unknown error',
+            });
+          }
+        }
+      }
+      
+      try {
+        response = await clobClient.postOrder(order);
+      } finally {
+        // Restore original http/https.request if we patched them
+        if (axiosPatched && originalHttpsRequest && originalHttpRequest) {
+          try {
+            const https = require('https');
+            const http = require('http');
+            https.request = originalHttpsRequest;
+            http.request = originalHttpRequest;
+            logger.debug('Restored original http/https.request functions');
+          } catch (restoreError) {
+            logger.warn('Error during proxy patch cleanup', {
+              error: restoreError instanceof Error ? restoreError.message : 'Unknown error',
+            });
+          }
+        }
+      }
     } catch (error: any) {
       // Enhanced error handling for signature issues
       const errorMessage = error?.message || error?.error || error?.response?.error || 'Unknown error';
@@ -244,6 +321,16 @@ export async function submitOrder(
         );
       }
       
+      // Check for invalid price errors
+      if (errorMsg.includes('invalid price') || (errorMsg.includes('price') && (errorMsg.includes('min:') || errorMsg.includes('max:')))) {
+        throw new Error(
+          `Order submission failed: invalid price (status: ${status}). ` +
+          `The price with slippage may have exceeded market limits. ` +
+          `For binary markets, prices must be between 0.001 and 0.999. ` +
+          `Original error: ${errorMsg}`
+        );
+      }
+      
       throw new Error(
         `Order submission failed: ${errorMsg} (status: ${status})`
       );
@@ -308,6 +395,23 @@ export async function submitOrder(
       throw new Error(
         `Order submission failed: order size below minimum requirement. ` +
         `Marketable orders must be at least $1. ` +
+        `Original error: ${errorMessage}`
+      );
+    }
+    
+    // Check for invalid price errors
+    if (errorMessage.includes('invalid price') || (errorMessage.includes('price') && (errorMessage.includes('min:') || errorMessage.includes('max:')))) {
+      logger.error('Order submission failed - invalid price', {
+        error: errorMessage,
+        side: order.side,
+        price: order.price,
+        size: order.size,
+        note: 'Price with slippage may have exceeded market limits. For binary markets, prices must be between 0.001 and 0.999.',
+      });
+      throw new Error(
+        `Order submission failed: invalid price. ` +
+        `The price with slippage may have exceeded market limits. ` +
+        `For binary markets, prices must be between 0.001 and 0.999. ` +
         `Original error: ${errorMessage}`
       );
     }

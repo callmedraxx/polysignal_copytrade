@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
+import { getUserLogger, getClientIp, UserLogger } from '../utils/user-logger';
 
 export interface AuthRequest extends Request {
   userId?: string;
   userAddress?: string;
+  userLogger?: UserLogger;
 }
 
 /**
@@ -32,6 +34,11 @@ export function authenticateToken(
 
     req.userId = decoded.userId;
     req.userAddress = decoded.address;
+    
+    // Attach user logger to request for easy access
+    const ipAddress = getClientIp(req);
+    req.userLogger = getUserLogger(decoded.address, ipAddress);
+    
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {

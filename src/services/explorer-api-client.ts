@@ -212,8 +212,9 @@ export async function callEtherscanAPI(
       // Status "0" can mean:
       // - Error: "NOTOK" or error message
       // - Success with no results: "No transactions found", "OK" with empty result
-      if (data.status === "0") {
-        const message = data.message || "";
+      const responseData = data as { status: string; message?: string; result?: any };
+      if (responseData.status === "0") {
+        const message = responseData.message || "";
         const isError = message === "NOTOK" || 
                        message.toLowerCase().includes("error") ||
                        message.toLowerCase().includes("invalid") ||
@@ -276,8 +277,9 @@ export async function callPolygonscanAPI(
       
       const data = await response.json();
       
-      if (data.status === "0" && data.message && data.message !== "OK") {
-        throw new Error(`Polygonscan API error: ${data.message}`);
+      const responseData = data as { status: string; message?: string; result?: any };
+      if (responseData.status === "0" && responseData.message && responseData.message !== "OK") {
+        throw new Error(`Polygonscan API error: ${responseData.message}`);
       }
       
       return data;
@@ -304,20 +306,27 @@ export async function getTokenTransfers(
   const isEthereum = chainId === "1" || chainId === 1;
   const explorer = isEthereum ? callEtherscanAPI : callPolygonscanAPI;
   
-  // Create cache key
-  const cacheKey = `transfers-${chainId}-${address}-${contractAddress || "all"}-${startBlock}-${endBlock}`;
+  // Normalize address to lowercase for consistent API calls
+  // Polygonscan API accepts lowercase addresses
+  const normalizedAddress = address.toLowerCase();
+  
+  // Create cache key with normalized addresses
+  // Use normalized addresses to ensure cache consistency
+  const normalizedContract = contractAddress ? contractAddress.toLowerCase() : "all";
+  const cacheKey = `transfers-${chainId}-${normalizedAddress}-${normalizedContract}-${startBlock}-${endBlock}`;
   
   const params: Record<string, string> = {
     module: "account",
     action: contractAddress ? "tokentx" : "txlist",
-    address: address,
+    address: normalizedAddress,
     startblock: startBlock.toString(),
     endblock: endBlock.toString(),
     sort: "desc",
   };
   
   if (contractAddress) {
-    params.contractaddress = contractAddress;
+    // Normalize contract address to lowercase
+    params.contractaddress = contractAddress.toLowerCase();
   }
   
   try {
@@ -408,6 +417,6 @@ export function clearExplorerCache() {
  * Check if using shared rate limiter
  */
 export function isUsingSharedRateLimiter(): boolean {
-  return useSharedRateLimiter;
+  return Boolean(useSharedRateLimiter);
 }
 

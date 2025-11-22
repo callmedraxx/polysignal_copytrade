@@ -1,7 +1,7 @@
 import { prisma } from '../config/database';
 import { config, isProduction } from '../config/env';
 import { tradeExecutionQueue } from './queue';
-import { validateTradeAmount, validateMarketCategory } from './position-sizer';
+import { validateTradeAmount } from './position-sizer';
 import { isMarketOpen } from './market-status';
 
 export interface ExternalSignal {
@@ -107,7 +107,8 @@ async function fetchSignalsFromAPI(): Promise<ExternalSignal[]> {
     
     // Handle different response formats
     // Expected format: { signals: [...] } or [...]
-    const signalsArray = Array.isArray(data) ? data : (data.signals || []);
+    const responseData = data as { signals?: any[] } | any[];
+    const signalsArray = Array.isArray(responseData) ? responseData : (responseData.signals || []);
     
     return signalsArray.map((signal: any) => ({
       id: signal.id || signal.signalId,
@@ -243,27 +244,9 @@ async function processConfigSignals(
           continue;
         }
 
-        // Calculate required shares
-        const originalShares = signal.shares ? parseFloat(signal.shares) : 0;
-        let requiredSharesWei: string;
-
-        if (signalConfig.amountType === 'percentageOfOriginal') {
-          const percentage = parseFloat(signalConfig.sellAmount) / 100;
-          const copiedShares = originalShares * percentage;
-          const { ethers } = await import('ethers');
-          requiredSharesWei = ethers.utils.parseUnits(copiedShares.toFixed(18), 18).toString();
-        } else if (signalConfig.amountType === 'fixed') {
-          const fixedAmountUSDC = parseFloat(signalConfig.sellAmount);
-          const price = signal.price || 0.5;
-          const sharesFromUSDC = fixedAmountUSDC / price;
-          const { ethers } = await import('ethers');
-          requiredSharesWei = ethers.utils.parseUnits(sharesFromUSDC.toFixed(18), 18).toString();
-        } else {
-          const percentage = parseFloat(signalConfig.sellAmount) / 100;
-          const copiedShares = originalShares * percentage;
-          const { ethers } = await import('ethers');
-          requiredSharesWei = ethers.utils.parseUnits(copiedShares.toFixed(18), 18).toString();
-        }
+        // Calculate required shares (for future use)
+        // const originalShares = signal.shares ? parseFloat(signal.shares) : 0;
+        // Note: Shares calculation removed as it's not currently used
 
         // Get token address from market (would need to fetch from Polymarket API)
         // For now, skip balance check if we can't determine token address

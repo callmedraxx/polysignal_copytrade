@@ -9,7 +9,7 @@ import { getUserBalance } from '../services/balance';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { config } from '../config/env';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * @swagger
@@ -92,8 +92,7 @@ router.post('/initiate', authenticateToken, async (req: AuthRequest, res: Respon
  *     description: |
  *       This endpoint queries the Polygon blockchain directly to get the current USDC balance.
  *       The balance is fetched in real-time and is not cached, ensuring you always get the most up-to-date balance.
- *       Checks BOTH Native USDC and Bridged USDC.e and returns combined balance.
- *       Also checks if user has USDC.e that needs to be swapped for Polymarket trading.
+ *       Checks ONLY USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174) as the accurate balance for the user proxy wallet.
  *       Safe to poll frequently from your frontend.
  *     tags: [Deposit]
  *     security:
@@ -108,11 +107,11 @@ router.post('/initiate', authenticateToken, async (req: AuthRequest, res: Respon
  *               properties:
  *                 balance:
  *                   type: string
- *                   description: Combined USDC balance (Native + Bridged) in human-readable format
+ *                   description: USDC.e balance in human-readable format
  *                   example: "100.50"
  *                 balanceRaw:
  *                   type: string
- *                   description: Combined USDC balance in smallest unit (6 decimals)
+ *                   description: USDC.e balance in smallest unit (6 decimals)
  *                 proxyWallet:
  *                   type: string
  *                   description: User's proxy wallet address
@@ -302,8 +301,8 @@ router.get('/history', authenticateToken, async (req: AuthRequest, res: Response
 router.post('/callback', async (req: Request, res: Response) => {
   try {
     // Verify webhook secret (in production, verify signature)
-    const webhookSecret = config.deposit.webhookSecret;
     // TODO: Add webhook signature verification here
+    // const webhookSecret = config.deposit.webhookSecret;
 
     const { depositId, onramperOrderId, usdcAmount, transactionHash } = req.body;
 
@@ -827,11 +826,17 @@ router.post('/sync-assets', authenticateToken, async (_req: AuthRequest, res: Re
  *       All deposits are automatically bridged and swapped to USDC.e on Polygon.
  *       USDC.e is credited to the user's proxy wallet for trading.
  *       
- *       **Important:** Always use the proxy wallet address returned in the response.
- *       Do not use the user's original wallet address for deposits.
+ *       **Important:** 
+ *       - This endpoint requires authentication (Bearer token in Authorization header)
+ *       - No request body parameters needed - user is identified from JWT token
+ *       - Always use the proxy wallet address returned in the response
+ *       - Do not use the user's original wallet address for deposits
  *     tags: [Deposit]
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       description: No request body required - user is identified from JWT token
  *     responses:
  *       200:
  *         description: Deposit addresses created successfully
@@ -1103,23 +1108,21 @@ router.get('/deposit-options', authenticateToken, async (req: AuthRequest, res: 
  * @swagger
  * /deposit/history:
  *   get:
- *     summary: Get user's complete deposit history including historical deposits
+ *     summary: Get user's complete deposit history (USDC.e only)
  *     description: |
- *       Returns all deposits for the user including:
- *       - Deposits tracked in database
- *       - Historical deposits scanned from blockchain
- *       - Current status, tracking info, and transaction hashes
- *       - Statistics (total, completed, pending, total amount)
+ *       Returns all USDC.e deposits for the user's proxy wallet.
+ *       The endpoint automatically syncs new deposits from the blockchain to the database
+ *       for record keeping. Only USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174) is tracked,
+ *       which matches the token used for balance checks.
+ *       
+ *       Features:
+ *       - Automatically syncs new on-chain deposits to database
+ *       - Uses incremental scanning (only scans new blocks since last check)
+ *       - Returns deposits from database (includes all synced on-chain deposits)
+ *       - Provides statistics (total, completed, pending, total amount)
  *     tags: [Deposit]
  *     security:
  *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: sync
- *         schema:
- *           type: boolean
- *           default: false
- *         description: Whether to sync historical deposits from blockchain (default false)
  *     responses:
  *       200:
  *         description: Deposit history retrieved successfully
@@ -1142,6 +1145,7 @@ router.get('/deposit-options', authenticateToken, async (req: AuthRequest, res: 
  *                         type: string
  *                       tokenSymbol:
  *                         type: string
+ *                         example: "USDC.e"
  *                       amount:
  *                         type: string
  *                       targetAmount:
@@ -1151,7 +1155,11 @@ router.get('/deposit-options', authenticateToken, async (req: AuthRequest, res: 
  *                         format: date-time
  *                       transactionHash:
  *                         type: string
+ *                       blockNumber:
+ *                         type: number
  *                       isHistorical:
+ *                         type: boolean
+ *                       isBridgedUSDCE:
  *                         type: boolean
  *                 stats:
  *                   type: object
@@ -1175,17 +1183,9 @@ router.get('/history', authenticateToken, async (req: AuthRequest, res: Response
       return;
     }
 
-    // Check if user wants to sync historical deposits
-    const shouldSync = req.query.sync === 'true';
-    
-    if (shouldSync) {
-      const { syncHistoricalDeposits } = await import('../services/deposit-history-scanner');
-      await syncHistoricalDeposits(userAddress);
-    }
-
-    // Get complete deposit history (includes historical deposits)
+    // Get complete deposit history (always syncs new deposits from blockchain to database)
     const { getCompleteDepositHistory } = await import('../services/deposit-history-scanner');
-    const history = await getCompleteDepositHistory(userAddress);
+    const history = await getCompleteDepositHistory(userAddress, true); // autoSync = true
 
     res.json(history);
   } catch (error) {

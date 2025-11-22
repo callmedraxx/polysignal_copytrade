@@ -32,7 +32,7 @@ cp .env.example .env
 
 **Note**: In development mode (`NODE_ENV=development`), the app uses in-memory stores for both database and Redis. No Docker, PostgreSQL, or Redis setup is required. Database migrations are only needed for production.
 
-The server will start on `http://localhost:3000` with hot-reload enabled.
+The server will start on `http://localhost:3001` with hot-reload enabled.
 
 ## Production Setup with Docker
 
@@ -67,14 +67,14 @@ npm run start:prod
 
 ## Endpoints
 
-- **Frontend**: `http://localhost:3000` (authentication test page)
-- API: `http://localhost:3000/api`
-- Health Check: `http://localhost:3000/api/health`
-- Swagger Docs: `http://localhost:3000/api-docs`
-- Admin Panel: `http://localhost:3000/admin` (production only)
-- Auth Nonce: `POST http://localhost:3000/api/auth/nonce`
-- Auth Verify: `POST http://localhost:3000/api/auth/verify`
-- Auth Me: `GET http://localhost:3000/api/auth/me` (requires Bearer token)
+- **Frontend**: `http://localhost:3001` (authentication test page)
+- API: `http://localhost:3001/api`
+- Health Check: `http://localhost:3001/api/health`
+- Swagger Docs: `http://localhost:3001/api-docs`
+- Admin Panel: `http://localhost:3001/admin` (production only)
+- Auth Nonce: `POST http://localhost:3001/api/auth/nonce`
+- Auth Verify: `POST http://localhost:3001/api/auth/verify`
+- Auth Me: `GET http://localhost:3001/api/auth/me` (requires Bearer token)
 
 ## Authentication
 

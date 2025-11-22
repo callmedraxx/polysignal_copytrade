@@ -4,11 +4,13 @@ import { prisma } from '../config/database';
 
 // USDC contract addresses on Polygon
 // Polygon has TWO USDC tokens:
-// 1. Native USDC (newer, official) - 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
-// 2. Bridged USDC.e (older, bridged from Ethereum) - 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359
-const USDC_NATIVE_ADDRESS = config.blockchain.usdcAddress || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const USDC_BRIDGED_ADDRESS = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'; // USDC.e (bridged)
-const USDC_DECIMALS = 6; // Both USDC tokens have 6 decimals
+// 1. USDC.e (bridged from Ethereum, older) - 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+// 2. Native USDC (newer, official) - 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359
+// 
+// IMPORTANT: The balance endpoint checks ONLY USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+// as this is the accurate balance for the user proxy wallet.
+const USDC_E_ADDRESS = config.blockchain.usdcAddress || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'; // USDC.e (bridged)
+const USDC_DECIMALS = 6; // USDC.e has 6 decimals
 
 // ERC20 ABI (minimal - just balanceOf)
 const ERC20_ABI = [
@@ -60,7 +62,7 @@ export async function getUserBalance(userAddress: string): Promise<{
     }
 
     // Fetch balance directly from Polygon blockchain (no caching)
-    // Checks BOTH Native USDC and Bridged USDC.e and returns combined balance
+    // Checks ONLY USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174) as the accurate balance
     // This ensures real-time, up-to-date balance information
     try {
       const balance = await getUSDCBalance(user.proxyWallet);
@@ -98,15 +100,14 @@ export async function getUserBalance(userAddress: string): Promise<{
 /**
  * Get USDC balance for a specific address (proxy wallet)
  * 
- * IMPORTANT: Checks BOTH Native USDC and Bridged USDC.e contracts
- * and returns the COMBINED balance. This ensures we catch USDC sent
- * from exchanges like Bybit which may send USDC.e instead of Native USDC.
+ * IMPORTANT: Checks ONLY USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+ * as this is the accurate balance for the user proxy wallet.
  * 
  * Fetches balance directly from Polygon blockchain via RPC call.
  * No caching - always returns fresh data from the blockchain.
  * 
  * @param address Proxy wallet address
- * @returns Combined balance in human-readable format (e.g., "100.50")
+ * @returns USDC.e balance in human-readable format (e.g., "100.50")
  * @throws Only throws if RPC URL is not configured, otherwise returns "0" on network errors
  */
 export async function getUSDCBalance(address: string): Promise<string> {
@@ -132,37 +133,24 @@ export async function getUSDCBalance(address: string): Promise<string> {
       return '0';
     }
 
-    // Check BOTH Native USDC and Bridged USDC.e contracts
-    const nativeContract = new ethers.Contract(USDC_NATIVE_ADDRESS, ERC20_ABI, provider);
-    const bridgedContract = new ethers.Contract(USDC_BRIDGED_ADDRESS, ERC20_ABI, provider);
+    // Check ONLY USDC.e contract (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+    const usdceContract = new ethers.Contract(USDC_E_ADDRESS, ERC20_ABI, provider);
 
-    // Fetch both balances in parallel
-    const [nativeBalancePromise, bridgedBalancePromise] = [
-      nativeContract.balanceOf(address),
-      bridgedContract.balanceOf(address),
-    ];
-
+    const balancePromise = usdceContract.balanceOf(address);
     const balanceTimeout = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Balance fetch timeout')), 10000)
     );
 
-    const [nativeBalance, bridgedBalance] = await Promise.race([
-      Promise.all([nativeBalancePromise, bridgedBalancePromise]),
+    const balance = await Promise.race([
+      balancePromise,
       balanceTimeout,
-    ]) as [ethers.BigNumber, ethers.BigNumber];
+    ]) as ethers.BigNumber;
 
-    // Combine both balances
-    const totalBalance = nativeBalance.add(bridgedBalance);
-    const formattedBalance = ethers.utils.formatUnits(totalBalance, USDC_DECIMALS);
+    const formattedBalance = ethers.utils.formatUnits(balance, USDC_DECIMALS);
 
-    // Log breakdown for debugging (only if there's a balance)
-    if (!totalBalance.isZero()) {
-      const nativeFormatted = ethers.utils.formatUnits(nativeBalance, USDC_DECIMALS);
-      const bridgedFormatted = ethers.utils.formatUnits(bridgedBalance, USDC_DECIMALS);
-      console.log(`💰 Balance breakdown for ${address}:`);
-      console.log(`   Native USDC: ${nativeFormatted}`);
-      console.log(`   Bridged USDC.e: ${bridgedFormatted}`);
-      console.log(`   Total: ${formattedBalance}`);
+    // Log balance for debugging (only if there's a balance)
+    if (!balance.isZero()) {
+      console.log(`💰 USDC.e balance for ${address}: ${formattedBalance}`);
     }
 
     return formattedBalance;
@@ -187,11 +175,11 @@ export async function getUSDCBalance(address: string): Promise<string> {
 /**
  * Get USDC balance in raw format (smallest unit)
  * 
- * IMPORTANT: Checks BOTH Native USDC and Bridged USDC.e contracts
- * and returns the COMBINED raw balance.
+ * IMPORTANT: Checks ONLY USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+ * as this is the accurate balance for the user proxy wallet.
  * 
  * @param address Proxy wallet address
- * @returns Combined balance as string in smallest unit (6 decimals)
+ * @returns USDC.e balance as string in smallest unit (6 decimals)
  */
 export async function getUSDCBalanceRaw(address: string): Promise<string> {
   const rpcUrl = config.blockchain.polygonRpcUrl;
@@ -203,28 +191,20 @@ export async function getUSDCBalanceRaw(address: string): Promise<string> {
   try {
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     
-    // Check BOTH Native USDC and Bridged USDC.e contracts
-    const nativeContract = new ethers.Contract(USDC_NATIVE_ADDRESS, ERC20_ABI, provider);
-    const bridgedContract = new ethers.Contract(USDC_BRIDGED_ADDRESS, ERC20_ABI, provider);
+    // Check ONLY USDC.e contract (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+    const usdceContract = new ethers.Contract(USDC_E_ADDRESS, ERC20_ABI, provider);
 
-    // Fetch both balances in parallel
-    const [nativeBalancePromise, bridgedBalancePromise] = [
-      nativeContract.balanceOf(address),
-      bridgedContract.balanceOf(address),
-    ];
-
+    const balancePromise = usdceContract.balanceOf(address);
     const balanceTimeout = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Balance fetch timeout')), 10000)
     );
 
-    const [nativeBalance, bridgedBalance] = await Promise.race([
-      Promise.all([nativeBalancePromise, bridgedBalancePromise]),
+    const balance = await Promise.race([
+      balancePromise,
       balanceTimeout,
-    ]) as [ethers.BigNumber, ethers.BigNumber];
+    ]) as ethers.BigNumber;
 
-    // Combine both balances
-    const totalBalance = nativeBalance.add(bridgedBalance);
-    return totalBalance.toString();
+    return balance.toString();
   } catch (error: any) {
     const errorMessage = error?.message || 'Unknown error';
     const errorCode = error?.code || 'UNKNOWN';
@@ -263,33 +243,27 @@ export async function getBatchUSDCBalances(
   try {
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     
-    // Check BOTH Native USDC and Bridged USDC.e contracts
-    const nativeContract = new ethers.Contract(USDC_NATIVE_ADDRESS, ERC20_ABI, provider);
-    const bridgedContract = new ethers.Contract(USDC_BRIDGED_ADDRESS, ERC20_ABI, provider);
+    // Check ONLY USDC.e contract (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+    const usdceContract = new ethers.Contract(USDC_E_ADDRESS, ERC20_ABI, provider);
 
     const balanceMap = new Map<string, string>();
 
     // Fetch balances in parallel with individual error handling
     const balancePromises = addresses.map(async (address) => {
       try {
-        // Fetch both Native and Bridged balances
-        const [nativeBalancePromise, bridgedBalancePromise] = [
-          nativeContract.balanceOf(address),
-          bridgedContract.balanceOf(address),
-        ];
+        // Fetch USDC.e balance only
+        const balancePromise = usdceContract.balanceOf(address);
         
         const balanceTimeout = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Balance fetch timeout')), 10000)
         );
         
-        const [nativeBalance, bridgedBalance] = await Promise.race([
-          Promise.all([nativeBalancePromise, bridgedBalancePromise]),
+        const balance = await Promise.race([
+          balancePromise,
           balanceTimeout,
-        ]) as [ethers.BigNumber, ethers.BigNumber];
+        ]) as ethers.BigNumber;
         
-        // Combine both balances
-        const totalBalance = nativeBalance.add(bridgedBalance);
-        const formattedBalance = ethers.utils.formatUnits(totalBalance, USDC_DECIMALS);
+        const formattedBalance = ethers.utils.formatUnits(balance, USDC_DECIMALS);
         return { address, balance: formattedBalance };
       } catch (error: any) {
         const errorMessage = error?.message || 'Unknown error';

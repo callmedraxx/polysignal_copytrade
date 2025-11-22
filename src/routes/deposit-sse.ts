@@ -1,12 +1,11 @@
 import { Router, Response } from "express";
-import { authenticateToken, AuthRequest } from "../middleware/auth";
 import { logger } from "../utils/logger";
 import { prisma } from "../config/database";
 import { trackDeposit } from "../services/deposit-tracker";
 import { config } from "../config/env";
 import jwt from "jsonwebtoken";
 
-const router = Router();
+const router: Router = Router();
 
 // Store active SSE connections
 const activeConnections = new Map<string, Set<Response>>();

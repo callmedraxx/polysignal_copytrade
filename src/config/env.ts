@@ -12,27 +12,27 @@ export const config = {
     url: process.env.REDIS_URL || '',
   },
   adminjs: {
-    cookieSecret: process.env.ADMINJS_COOKIE_SECRET || 'default-cookie-secret-change-in-production',
-    sessionSecret: process.env.ADMINJS_SESSION_SECRET || 'default-session-secret-change-in-production',
+    cookieSecret: process.env.ADMINJS_COOKIE_SECRET || '',
+    sessionSecret: process.env.ADMINJS_SESSION_SECRET || '',
   },
   app: {
     name: process.env.APP_NAME || 'PolySignal Copy Trading',
-    url: process.env.APP_URL || 'http://localhost:3000',
+    url: process.env.APP_URL || 'http://localhost:3001',
   },
   jwt: {
-    secret: process.env.JWT_SECRET || 'default-jwt-secret-change-in-production',
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    secret: process.env.JWT_SECRET || '',
+    expiresIn: process.env.JWT_EXPIRES_IN || '',
   },
   blockchain: {
-    polygonRpcUrl: process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com',
+    polygonRpcUrl: process.env.POLYGON_RPC_URL || '',
     deployerPrivateKey: process.env.DEPLOYER_PRIVATE_KEY || '',
-    usdcAddress: process.env.USDC_POLYGON_ADDRESS || '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', // USDC on Polygon
-    ctfAddress: process.env.CTF_ADDRESS || '0x4d97dcd97ec945f40cf65f87097ace5ea0476045', // Conditional Token Framework on Polygon
+    usdcAddress: process.env.USDC_POLYGON_ADDRESS || '', // USDC on Polygon
+    ctfAddress: process.env.CTF_ADDRESS || '', // Conditional Token Framework on Polygon
     hdWalletMnemonic: process.env.HD_WALLET_MNEMONIC || '', // Mnemonic for HD wallet derivation (for dynamic Safe deployment)
   },
   deposit: {
     onramperApiKey: process.env.ONRAMPER_API_KEY || '',
-    onramperApiUrl: process.env.ONRAMPER_API_URL || 'https://api.onramper.com',
+    onramperApiUrl: process.env.ONRAMPER_API_URL || '',
     webhookSecret: process.env.DEPOSIT_WEBHOOK_SECRET || '',
   },
   polymarket: {
@@ -68,6 +68,21 @@ export const config = {
   tenderly: {
     accessToken: process.env.TENDERLY_ACCESS_TOKEN || '',
     apiUrl: process.env.TENDERLY_API_URL || '',
+  },
+  proxy: {
+    enabled: process.env.PROXY_ENABLED === 'true',
+    url: process.env.PROXY_URL || '',
+    // CLOB-specific proxy override (for routing through local machine)
+    // If set, this will be used for CLOB order submission instead of the general proxy
+    clobProxyUrl: process.env.CLOB_PROXY_URL || '',
+    // Oxylabs specific (kept for future use)
+    oxylabs: {
+      username: process.env.OXYLABS_USERNAME || '',
+      password: process.env.OXYLABS_PASSWORD || '',
+      proxyType: (process.env.OXYLABS_PROXY_TYPE || 'http') as 'http' | 'socks5',
+      country: process.env.OXYLABS_COUNTRY || '', // Optional: us, gb, etc.
+      useDatacenter: process.env.OXYLABS_USE_DATACENTER === 'true', // Use dc.oxylabs.io instead of pr.oxylabs.io
+    },
   },
 };
 

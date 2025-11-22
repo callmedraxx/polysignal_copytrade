@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Router as RouterType } from 'express';
 import authRoutes from './auth';
 import depositRoutes from './deposit';
 import depositSseRoutes from './deposit-sse';
@@ -9,7 +9,7 @@ import walletRoutes from './wallet';
 import tradeHistoryRoutes from './trade-history';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 
-const router = Router();
+const router: RouterType = Router();
 
 /**
  * @swagger
@@ -32,7 +32,7 @@ const router = Router();
  *                   type: string
  *                   example: 2024-01-01T00:00:00.000Z
  */
-router.get('/health', (req, res) => {
+router.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),

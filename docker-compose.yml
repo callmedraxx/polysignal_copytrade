@@ -1,42 +1,130 @@
-version: '3.8'
-
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: polysignal_app
+    container_name: polysignal_copytrading_app
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-3001}:3001"
     environment:
+      # App Configuration
       - NODE_ENV=production
-      - PORT=${PORT:-3000}
+      - PORT=${PORT:-3001}
+      - APP_NAME=${APP_NAME:-PolySignal Copy Trading}
+      - APP_URL=${APP_URL:-http://localhost:3001}
+      
+      # Database
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-polysignal_db}
+      
+      # Redis
       - REDIS_URL=redis://redis:6379
+      
+      # AdminJS
       - ADMINJS_COOKIE_SECRET=${ADMINJS_COOKIE_SECRET}
       - ADMINJS_SESSION_SECRET=${ADMINJS_SESSION_SECRET}
-      - APP_NAME=${APP_NAME:-PolySignal Copy Trading}
-      - APP_URL=${APP_URL:-http://localhost:3000}
+      
+      # JWT Authentication
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-7d}
+      
+      # Blockchain Configuration
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL}
+      - DEPLOYER_PRIVATE_KEY=${DEPLOYER_PRIVATE_KEY}
+      - USDC_POLYGON_ADDRESS=${USDC_POLYGON_ADDRESS}
+      - CTF_ADDRESS=${CTF_ADDRESS}
+      - HD_WALLET_MNEMONIC=${HD_WALLET_MNEMONIC}
+      
+      # Deposit/Onramper
+      - ONRAMPER_API_KEY=${ONRAMPER_API_KEY}
+      - ONRAMPER_API_URL=${ONRAMPER_API_URL}
+      - DEPOSIT_WEBHOOK_SECRET=${DEPOSIT_WEBHOOK_SECRET}
+      
+      # Polymarket Configuration
+      - POLYMARKET_DATA_API_URL=${POLYMARKET_DATA_API_URL:-https://data-api.polymarket.com}
+      - POLYMARKET_GAMMA_API_URL=${POLYMARKET_GAMMA_API_URL:-https://gamma-api.polymarket.com}
+      - POLYMARKET_SUBGRAPH_URL=${POLYMARKET_SUBGRAPH_URL:-https://api.studio.thegraph.com/query/polymarket/pm-subgraph/version/latest}
+      - POLYMARKET_CLOB_API_URL=${POLYMARKET_CLOB_API_URL:-https://clob.polymarket.com}
+      - POLYMARKET_RELAYER_URL=${POLYMARKET_RELAYER_URL:-https://relayer-v2.polymarket.com/}
+      
+      # Polymarket Builder API
+      - POLY_BUILDER_API_KEY=${POLY_BUILDER_API_KEY}
+      - POLY_BUILDER_SECRET=${POLY_BUILDER_SECRET}
+      - POLY_BUILDER_PASSPHRASE=${POLY_BUILDER_PASSPHRASE}
+      # Signing server URL: Use host.docker.internal to access host services from container
+      # The signing server runs on the host at port 5001
+      - POLY_BUILDER_SIGNING_SERVER_URL=${POLY_BUILDER_SIGNING_SERVER_URL:-http://host.docker.internal:5001/sign}
+      - POLY_BUILDER_SIGNING_SERVER_TOKEN=${POLY_BUILDER_SIGNING_SERVER_TOKEN}
+      
+      # Signals API
+      - SIGNALS_API_URL=${SIGNALS_API_URL}
+      - SIGNALS_API_KEY=${SIGNALS_API_KEY}
+      
+      # Safe/Gnosis Safe Configuration
+      - SAFE_TRANSACTION_SERVICE_URL=${SAFE_TRANSACTION_SERVICE_URL:-https://safe-transaction.polygon.safe.global}
+      - SAFE_RELAYER_PRIVATE_KEY=${SAFE_RELAYER_PRIVATE_KEY}
+      - SAFE_RELAYER_ADDRESS=${SAFE_RELAYER_ADDRESS}
+      
+      # Workers Configuration
+      - TRADE_MONITOR_INTERVAL=${TRADE_MONITOR_INTERVAL:-30000}
+      - MAX_RETRIES=${MAX_RETRIES:-3}
+      - DEPOSIT_TRACKING_INTERVAL=${DEPOSIT_TRACKING_INTERVAL:-60000}
+      
+      # Tenderly (Optional)
+      - TENDERLY_ACCESS_TOKEN=${TENDERLY_ACCESS_TOKEN}
+      - TENDERLY_API_URL=${TENDERLY_API_URL}
+      
+      # Explorer API Keys (Optional - for rate limiting)
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY}
+      - ETHERSCAN_API_URL=${ETHERSCAN_API_URL:-https://api.etherscan.com/api}
+      - POLYGONSCAN_API_KEY=${POLYGONSCAN_API_KEY}
+      - POLYGONSCAN_API_URL=${POLYGONSCAN_API_URL:-https://api.polygonscan.com/api}
+      
+      # Proxy Configuration (for CLOB order submission)
+      - PROXY_ENABLED=${PROXY_ENABLED}
+      - PROXY_URL=${PROXY_URL}
+      - CLOB_PROXY_URL=${CLOB_PROXY_URL}
+      # HTTP_PROXY and HTTPS_PROXY for libraries that respect these env vars (axios, etc.)
+      - HTTP_PROXY=${CLOB_PROXY_URL}
+      - HTTPS_PROXY=${CLOB_PROXY_URL}
+      - OXYLABS_USERNAME=${OXYLABS_USERNAME}
+      - OXYLABS_PASSWORD=${OXYLABS_PASSWORD}
+      - OXYLABS_PROXY_TYPE=${OXYLABS_PROXY_TYPE}
+      - OXYLABS_COUNTRY=${OXYLABS_COUNTRY}
+      - OXYLABS_USE_DATACENTER=${OXYLABS_USE_DATACENTER}
     env_file:
       - .env
+    volumes:
+      - ./logs:/app/logs
+      - app_data:/app/data
+      - user_logs:/app/logs/users
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    extra_hosts:
+      # Map host.docker.internal to the Docker gateway so containers can access host services
+      # This allows the container to reach the signing server on the host (port 5001)
+      - "host.docker.internal:host-gateway"
+    restart: always
     networks:
       - polysignal_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   postgres:
     image: postgres:16-alpine
-    container_name: polysignal_postgres
+    container_name: polysignal_copytrading_postgres
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       - POSTGRES_DB=${POSTGRES_DB:-polysignal_db}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5435}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     env_file:
@@ -52,9 +140,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: polysignal_redis
+    container_name: polysignal_copytrading_redis
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_PORT:-6381}:6379"
     volumes:
       - redis_data:/data
     env_file:
@@ -71,7 +159,13 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
   redis_data:
+    driver: local
+  app_data:
+    driver: local
+  user_logs:
+    driver: local
 
 networks:
   polysignal_network:

@@ -4,6 +4,7 @@ import { tradeExecutionQueue } from './queue';
 import { validateTradeAmount, validateMarketCategory } from './position-sizer';
 import { isMarketOpen } from './market-status';
 import { ethers } from 'ethers';
+import { getUserLogger } from '../utils/user-logger';
 
 export interface PolymarketTrade {
   proxyWallet: string;
@@ -26,6 +27,72 @@ export interface PolymarketTrade {
 /**
  * Monitor Polymarket for trades from tracked traders
  */
+/**
+ * Check if config is active and within limits
+ */
+async function isConfigActive(copyConfig: any): Promise<{ isActive: boolean; reason?: string }> {
+  // Check status
+  if (copyConfig.status !== 'active') {
+    return { isActive: false, reason: `Config status is ${copyConfig.status}` };
+  }
+
+  // Check duration
+  if (copyConfig.durationDays && copyConfig.startDate) {
+    const now = new Date();
+    const startDate = new Date(copyConfig.startDate);
+    const daysElapsed = (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+    
+    if (daysElapsed >= copyConfig.durationDays) {
+      // Auto-pause when duration expires
+      try {
+        await prisma.copyTradingConfig.update({
+          where: { id: copyConfig.id },
+          data: { 
+            status: 'paused',
+            enabled: false,
+          },
+        });
+        console.log(`⏸️ Config ${copyConfig.id} auto-paused: duration expired (${copyConfig.durationDays} days)`);
+      } catch (error) {
+        console.error(`⚠️ Failed to auto-pause config ${copyConfig.id}:`, error);
+      }
+      return { isActive: false, reason: 'Duration expired' };
+    }
+  }
+
+  // Check max trades per day
+  if (copyConfig.maxBuyTradesPerDay && copyConfig.lastResetDate) {
+    const now = new Date();
+    const lastReset = new Date(copyConfig.lastResetDate);
+    const hoursSinceReset = (now.getTime() - lastReset.getTime()) / (1000 * 60 * 60);
+    
+    // Reset count if 24 hours have passed
+    if (hoursSinceReset >= 24) {
+      try {
+        await prisma.copyTradingConfig.update({
+          where: { id: copyConfig.id },
+          data: {
+            tradesCountToday: 0,
+            lastResetDate: new Date(),
+          },
+        });
+        copyConfig.tradesCountToday = 0;
+        copyConfig.lastResetDate = new Date();
+        console.log(`🔄 Config ${copyConfig.id}: Trade count reset after 24 hours`);
+      } catch (error) {
+        console.error(`⚠️ Failed to reset trade count for config ${copyConfig.id}:`, error);
+      }
+    }
+    
+    // Check if max trades reached (only if less than 24 hours since reset)
+    if (hoursSinceReset < 24 && copyConfig.tradesCountToday >= copyConfig.maxBuyTradesPerDay) {
+      return { isActive: false, reason: 'Maximum buy trades per day reached' };
+    }
+  }
+
+  return { isActive: true };
+}
+
 export async function monitorTrades(): Promise<number> {
   try {
     // Get all enabled copy trading configurations
@@ -33,6 +100,9 @@ export async function monitorTrades(): Promise<number> {
       where: {
         enabled: true,
         authorized: true, // Only monitor authorized configs
+      },
+      include: {
+        user: true, // Include user relation for logging
       },
     });
 
@@ -48,6 +118,13 @@ export async function monitorTrades(): Promise<number> {
     // Process each configuration
     for (const copyConfig of enabledConfigs) {
       try {
+        // Check if config is active and within limits
+        const activeCheck = await isConfigActive(copyConfig);
+        if (!activeCheck.isActive) {
+          console.log(`⏭️ Config ${copyConfig.id} skipped: ${activeCheck.reason}`);
+          continue;
+        }
+
         const tradesQueued = await processConfigTrades(copyConfig);
         totalTradesQueued += tradesQueued;
       } catch (error: any) {
@@ -229,6 +306,42 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
       continue;
     }
 
+    // Check max buy trades per day for buy trades
+    if (tradeType === 'buy' && copyConfig.maxBuyTradesPerDay) {
+      // Refresh config to get latest trade count
+      const refreshedConfig = await prisma.copyTradingConfig.findUnique({
+        where: { id: copyConfig.id },
+      });
+      
+      if (refreshedConfig) {
+        // Check and reset if needed
+        if (refreshedConfig.lastResetDate) {
+          const now = new Date();
+          const lastReset = new Date(refreshedConfig.lastResetDate);
+          const hoursSinceReset = (now.getTime() - lastReset.getTime()) / (1000 * 60 * 60);
+          
+          if (hoursSinceReset >= 24) {
+            // Reset count
+            await prisma.copyTradingConfig.update({
+              where: { id: copyConfig.id },
+              data: {
+                tradesCountToday: 0,
+                lastResetDate: new Date(),
+              },
+            });
+            refreshedConfig.tradesCountToday = 0;
+            refreshedConfig.lastResetDate = new Date();
+          }
+        }
+        
+        // Check if max reached
+        if (refreshedConfig.maxBuyTradesPerDay && refreshedConfig.tradesCountToday >= refreshedConfig.maxBuyTradesPerDay) {
+          console.log(`⏭️ Config ${copyConfig.id}: Max buy trades per day reached (${refreshedConfig.tradesCountToday}/${refreshedConfig.maxBuyTradesPerDay})`);
+          continue;
+        }
+      }
+    }
+
     // Validate trade amount
     const amountValidation = validateTradeAmount(
       trade.usdcSize,
@@ -389,6 +502,7 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
     }
 
     // Create copied trade record
+    // Note: userId column doesn't exist - link through configId instead
     const copiedTrade = await prisma.copiedTrade.create({
       data: {
         configId: copyConfig.id,
@@ -398,13 +512,29 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
         marketQuestion: trade.title,
         outcomeIndex: trade.outcomeIndex,
         tradeType: tradeType,
-        originalAmount: trade.usdcSize,
+        originalAmount: typeof trade.usdcSize === 'string' ? trade.usdcSize : String(trade.usdcSize),
         originalPrice: trade.price.toString(),
-        originalShares: trade.size || null, // Number of shares in original trade
+        originalShares: trade.size ? String(trade.size) : null, // Number of shares in original trade
         copiedAmount: '0', // Will be calculated during execution
         status: 'pending',
       },
     });
+
+    // Log trade copy event
+    const userLogger = getUserLogger(copyConfig.user.address);
+    userLogger.tradeCopied(
+      copiedTrade.id,
+      trade.transactionHash,
+      trade.conditionId,
+      {
+        configId: copyConfig.id,
+        traderAddress,
+        marketQuestion: trade.title,
+        tradeType,
+        originalAmount: trade.usdcSize,
+        originalPrice: trade.price.toString(),
+      }
+    );
 
     // Queue trade for execution
     try {

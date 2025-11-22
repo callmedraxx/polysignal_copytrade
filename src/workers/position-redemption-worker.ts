@@ -1,7 +1,6 @@
 import cron from 'node-cron';
 import { autoRedeemPositions } from '../services/position-redemption';
 import { logger } from '../utils/logger';
-import { config } from '../config/env';
 
 /**
  * Worker to periodically check for closed markets and auto-redeem positions

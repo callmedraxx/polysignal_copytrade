@@ -209,7 +209,23 @@ export async function executeBuyTrade(
     // Orderbook already validated above, so we can proceed with order creation
 
     // Calculate price with slippage
-    const priceWithSlippage = maxPrice * (1 + slippageTolerance);
+    let priceWithSlippage = maxPrice * (1 + slippageTolerance);
+    
+    // Cap price at maximum allowed (0.999 for binary markets)
+    // Polymarket binary markets have a maximum price of 0.999 (or 1.0)
+    // If slippage pushes price above max, cap it at the maximum
+    const MAX_PRICE = 0.999; // Maximum price for binary markets on Polymarket
+    if (priceWithSlippage > MAX_PRICE) {
+      logger.warn('Price with slippage exceeds maximum, capping at maximum', {
+        originalPrice: maxPrice,
+        priceWithSlippage,
+        maxPrice: MAX_PRICE,
+        slippageTolerance,
+        userAddress,
+        marketId,
+      });
+      priceWithSlippage = MAX_PRICE;
+    }
     
     // Convert amount from wei to decimal string
     const amountDecimal = ethers.utils.formatUnits(amountWei, 6); // USDC has 6 decimals
@@ -522,7 +538,23 @@ export async function executeSellTrade(
     }
 
     // Calculate min price with slippage
-    const minPriceWithSlippage = minPrice * (1 - slippageTolerance);
+    let minPriceWithSlippage = minPrice * (1 - slippageTolerance);
+    
+    // Cap price at minimum allowed (0.001 for binary markets)
+    // Polymarket binary markets have a minimum price of 0.001 (or 0.0)
+    // If slippage pushes price below min, cap it at the minimum
+    const MIN_PRICE = 0.001; // Minimum price for binary markets on Polymarket
+    if (minPriceWithSlippage < MIN_PRICE) {
+      logger.warn('Price with slippage below minimum, capping at minimum', {
+        originalPrice: minPrice,
+        minPriceWithSlippage,
+        minPrice: MIN_PRICE,
+        slippageTolerance,
+        userAddress,
+        marketId,
+      });
+      minPriceWithSlippage = MIN_PRICE;
+    }
     
     // Convert shares from wei to decimal string (shares typically have 18 decimals)
     const sharesDecimal = ethers.utils.formatUnits(sharesWei, 18);

@@ -17,7 +17,7 @@ const CTF_INTERFACE = new Interface([
  * In Polymarket CTF, the parent collection is typically the zero address for the root collection
  * or can be derived from the condition structure
  */
-function getParentCollectionId(conditionId: string): string {
+function getParentCollectionId(_conditionId: string): string {
   // For Polymarket, the parent collection is typically the zero address (root collection)
   // This represents the root collection for all conditions
   return ethers.constants.HashZero;

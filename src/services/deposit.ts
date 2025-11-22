@@ -2,7 +2,7 @@ import { ethers } from 'ethers';
 import { config } from '../config/env';
 import { prisma } from '../config/database';
 import { getUSDCBalance } from './balance';
-import { getSafeInstance } from './wallet';
+import { getUserLogger } from '../utils/user-logger';
 
 // USDC contract address on Polygon
 const USDC_ADDRESS = config.blockchain.usdcAddress;
@@ -62,6 +62,13 @@ export async function initiateDeposit(
       },
     });
 
+    // Log deposit initiation
+    const userLogger = getUserLogger(userAddress);
+    userLogger.depositInitiated(deposit.id, sourceAmount, sourceCurrency, {
+      userId: user.id,
+      proxyWallet: user.proxyWallet,
+    });
+
     // Generate Onramper widget URL
     // Note: Onramper widget integration - you'll need to configure this based on their API
     const onramperUrl = generateOnramperUrl(user.proxyWallet, sourceCurrency, sourceAmount, deposit.id);
@@ -73,6 +80,23 @@ export async function initiateDeposit(
     };
   } catch (error) {
     console.error('Error initiating deposit:', error);
+    
+    // Log deposit error
+    try {
+      const user = await prisma.user.findUnique({
+        where: { address: userAddress.toLowerCase() },
+      });
+      if (user) {
+        const userLogger = getUserLogger(userAddress);
+        userLogger.depositError('unknown', error, {
+          sourceCurrency,
+          sourceAmount,
+        });
+      }
+    } catch (logError) {
+      // Ignore logging errors
+    }
+    
     throw new Error(
       `Failed to initiate deposit: ${error instanceof Error ? error.message : 'Unknown error'}`
     );
@@ -195,6 +219,14 @@ export async function processDepositCallback(
       },
     });
 
+    // Log deposit completion
+    const userLogger = getUserLogger(deposit.user.address);
+    userLogger.depositCompleted(depositId, transactionHash || 'pending', usdcAmount, {
+      sourceCurrency: deposit.sourceCurrency,
+      sourceAmount: deposit.sourceAmount,
+      onramperOrderId,
+    });
+
     // Get final balance
     const finalBalance = await getUSDCBalance(deposit.proxyWallet);
 
@@ -238,7 +270,7 @@ export async function processDepositCallback(
  * @returns Transaction hash
  */
 export async function transferUSDCToProxyWallet(
-  fromAddress: string,
+  _fromAddress: string,
   toAddress: string,
   amount: string,
   signerPrivateKey: string

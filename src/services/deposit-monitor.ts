@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { config } from "../config/env";
-import { prisma } from "../config/database";
+// import { prisma } from "../config/database"; // Unused
 import { logger } from "../utils/logger";
 import { getUserByAddress } from "./auth";
 
@@ -62,8 +62,8 @@ export async function monitorUserDeposits(
     const rpcUrl = config.blockchain.polygonRpcUrl;
     const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
     
-    // Get current block if not specified
-    const currentBlock = sinceBlock || (await provider.getBlockNumber());
+    // Get current block if not specified (stored for future use)
+    // const currentBlock = sinceBlock || (await provider.getBlockNumber());
     
     // Check balances
     const nativeUSDCContract = new ethers.Contract(POLYGON_USDC, ERC20_ABI, provider);
@@ -86,7 +86,7 @@ export async function monitorUserDeposits(
         // Get token transfers to this address
         const tokenUrl = `${POLYGONSCAN_API_URL}?module=account&action=tokentx&address=${proxyWallet}&startblock=${sinceBlock || 0}&endblock=99999999&sort=desc&apikey=${apiKey}`;
         const tokenResponse = await fetch(tokenUrl);
-        const tokenData = await tokenResponse.json();
+        const tokenData = await tokenResponse.json() as { status: string; result?: any[]; message?: string };
         
         if (tokenData.status === "1" && Array.isArray(tokenData.result)) {
           // Filter for USDC transfers (both native and bridged)

@@ -471,6 +471,8 @@ function createInMemoryPrisma() {
           marketCategories?: string | null;
           enabled?: boolean;
           authorized?: boolean;
+          slippageTolerance?: string;
+          maxRetries?: number;
           traderInfo?: string | null;
         };
       }): Promise<any> {
@@ -1323,8 +1325,9 @@ function createInMemoryPrisma() {
         if ('id' in args.where) {
           signal = inMemoryCopiedSignals.get(args.where.id);
         } else if ('orderId' in args.where) {
+          const orderId = (args.where as { orderId: string }).orderId;
           signal = Array.from(inMemoryCopiedSignals.values()).find(
-            (s) => s.orderId === args.where.orderId
+            (s) => s.orderId === orderId
           );
         }
 

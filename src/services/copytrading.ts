@@ -1,6 +1,7 @@
 import { prisma } from '../config/database';
-import { verifyTrader, getTraderStats, TraderInfo } from './polymarket';
+import { verifyTrader, TraderInfo } from './polymarket';
 import { ethers } from 'ethers';
+import { getUserLogger } from '../utils/user-logger';
 
 export interface CopyTradingConfigInput {
   targetTraderAddress: string;
@@ -14,6 +15,9 @@ export interface CopyTradingConfigInput {
   minSellAmount?: string;
   maxSellAmount?: string;
   marketCategories?: string[];
+  maxBuyTradesPerDay?: number | null;
+  durationDays?: number | null;
+  configName?: string | null;
 }
 
 export interface CopyTradingConfigResponse {
@@ -31,9 +35,48 @@ export interface CopyTradingConfigResponse {
   marketCategories?: string[];
   enabled: boolean;
   authorized: boolean;
+  status: string;
+  maxBuyTradesPerDay?: number;
+  tradesCountToday: number;
+  lastResetDate?: Date;
+  durationDays?: number;
+  startDate?: Date;
+  configName?: string;
   traderInfo?: TraderInfo;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Helper function to map config to response
+ */
+function mapConfigToResponse(config: any): CopyTradingConfigResponse {
+  return {
+    id: config.id,
+    targetTraderAddress: config.targetTraderAddress,
+    copyBuyTrades: config.copyBuyTrades,
+    copySellTrades: config.copySellTrades,
+    amountType: config.amountType,
+    buyAmount: config.buyAmount,
+    sellAmount: config.sellAmount,
+    minBuyAmount: config.minBuyAmount || undefined,
+    maxBuyAmount: config.maxBuyAmount || undefined,
+    minSellAmount: config.minSellAmount || undefined,
+    maxSellAmount: config.maxSellAmount || undefined,
+    marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
+    enabled: config.enabled,
+    authorized: config.authorized,
+    status: config.status || 'active',
+    maxBuyTradesPerDay: config.maxBuyTradesPerDay || undefined,
+    tradesCountToday: config.tradesCountToday || 0,
+    lastResetDate: config.lastResetDate || undefined,
+    durationDays: config.durationDays || undefined,
+    startDate: config.startDate || undefined,
+    configName: config.configName || undefined,
+    traderInfo: config.traderInfo ? JSON.parse(config.traderInfo) : undefined,
+    createdAt: config.createdAt,
+    updatedAt: config.updatedAt,
+  };
 }
 
 /**
@@ -110,46 +153,66 @@ export async function createCopyTradingConfig(
     throw new Error('You already have a copy trading configuration for this trader');
   }
 
+  // Get user for logging
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+  const userLogger = getUserLogger(user?.address || userId);
+
+  // Prepare data for creation
+  const configData: any = {
+    userId,
+    targetTraderAddress: ethers.utils.getAddress(input.targetTraderAddress.toLowerCase()),
+    copyBuyTrades: input.copyBuyTrades,
+    copySellTrades: input.copySellTrades,
+    amountType: input.amountType,
+    buyAmount: input.buyAmount,
+    sellAmount: input.sellAmount,
+    minBuyAmount: input.minBuyAmount,
+    maxBuyAmount: input.maxBuyAmount,
+    minSellAmount: input.minSellAmount,
+    maxSellAmount: input.maxSellAmount,
+    marketCategories: input.marketCategories ? JSON.stringify(input.marketCategories) : null,
+    traderInfo: JSON.stringify(traderInfo),
+    enabled: false, // Must be explicitly enabled
+    authorized: false, // Must be authorized separately
+    status: 'active', // Default status
+    tradesCountToday: 0,
+  };
+
+  // Add optional fields if provided
+  if (input.maxBuyTradesPerDay !== undefined) {
+    configData.maxBuyTradesPerDay = input.maxBuyTradesPerDay;
+    if (input.maxBuyTradesPerDay !== null) {
+      configData.lastResetDate = new Date();
+    }
+  }
+
+  if (input.durationDays !== undefined) {
+    configData.durationDays = input.durationDays;
+    if (input.durationDays !== null) {
+      configData.startDate = new Date();
+    }
+  }
+
+  if (input.configName !== undefined && input.configName !== null) {
+    configData.configName = input.configName;
+  }
+
   // Create configuration
   const config = await prisma.copyTradingConfig.create({
-    data: {
-      userId,
-      targetTraderAddress: ethers.utils.getAddress(input.targetTraderAddress.toLowerCase()),
-      copyBuyTrades: input.copyBuyTrades,
-      copySellTrades: input.copySellTrades,
-      amountType: input.amountType,
-      buyAmount: input.buyAmount,
-      sellAmount: input.sellAmount,
-      minBuyAmount: input.minBuyAmount,
-      maxBuyAmount: input.maxBuyAmount,
-      minSellAmount: input.minSellAmount,
-      maxSellAmount: input.maxSellAmount,
-      marketCategories: input.marketCategories ? JSON.stringify(input.marketCategories) : null,
-      traderInfo: JSON.stringify(traderInfo),
-      enabled: false, // Must be explicitly enabled
-      authorized: false, // Must be authorized separately
-    },
+    data: configData,
   });
 
-  return {
-    id: config.id,
+  // Log config creation
+  userLogger.configCreated(config.id, 'trading', {
     targetTraderAddress: config.targetTraderAddress,
     copyBuyTrades: config.copyBuyTrades,
     copySellTrades: config.copySellTrades,
     amountType: config.amountType,
-    buyAmount: config.buyAmount,
-    sellAmount: config.sellAmount,
-    minBuyAmount: config.minBuyAmount || undefined,
-    maxBuyAmount: config.maxBuyAmount || undefined,
-    minSellAmount: config.minSellAmount || undefined,
-    maxSellAmount: config.maxSellAmount || undefined,
-    marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
-    enabled: config.enabled,
-    authorized: config.authorized,
-    traderInfo: config.traderInfo ? JSON.parse(config.traderInfo) : undefined,
-    createdAt: config.createdAt,
-    updatedAt: config.updatedAt,
-  };
+  });
+
+  return mapConfigToResponse(config);
 }
 
 /**
@@ -161,25 +224,7 @@ export async function getUserCopyTradingConfigs(userId: string): Promise<CopyTra
     orderBy: { createdAt: 'desc' },
   });
 
-  return configs.map((config) => ({
-    id: config.id,
-    targetTraderAddress: config.targetTraderAddress,
-    copyBuyTrades: config.copyBuyTrades,
-    copySellTrades: config.copySellTrades,
-    amountType: config.amountType,
-    buyAmount: config.buyAmount,
-    sellAmount: config.sellAmount,
-    minBuyAmount: config.minBuyAmount || undefined,
-    maxBuyAmount: config.maxBuyAmount || undefined,
-    minSellAmount: config.minSellAmount || undefined,
-    maxSellAmount: config.maxSellAmount || undefined,
-    marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
-    enabled: config.enabled,
-    authorized: config.authorized,
-    traderInfo: config.traderInfo ? JSON.parse(config.traderInfo) : undefined,
-    createdAt: config.createdAt,
-    updatedAt: config.updatedAt,
-  }));
+  return configs.map((config) => mapConfigToResponse(config));
 }
 
 /**
@@ -200,25 +245,7 @@ export async function getCopyTradingConfig(
     return null;
   }
 
-  return {
-    id: config.id,
-    targetTraderAddress: config.targetTraderAddress,
-    copyBuyTrades: config.copyBuyTrades,
-    copySellTrades: config.copySellTrades,
-    amountType: config.amountType,
-    buyAmount: config.buyAmount,
-    sellAmount: config.sellAmount,
-    minBuyAmount: config.minBuyAmount || undefined,
-    maxBuyAmount: config.maxBuyAmount || undefined,
-    minSellAmount: config.minSellAmount || undefined,
-    maxSellAmount: config.maxSellAmount || undefined,
-    marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
-    enabled: config.enabled,
-    authorized: config.authorized,
-    traderInfo: config.traderInfo ? JSON.parse(config.traderInfo) : undefined,
-    createdAt: config.createdAt,
-    updatedAt: config.updatedAt,
-  };
+  return mapConfigToResponse(config);
 }
 
 /**
@@ -289,25 +316,11 @@ export async function updateCopyTradingConfig(
     data: updateData,
   });
 
-  return {
-    id: updatedConfig.id,
-    targetTraderAddress: updatedConfig.targetTraderAddress,
-    copyBuyTrades: updatedConfig.copyBuyTrades,
-    copySellTrades: updatedConfig.copySellTrades,
-    amountType: updatedConfig.amountType,
-    buyAmount: updatedConfig.buyAmount,
-    sellAmount: updatedConfig.sellAmount,
-    minBuyAmount: updatedConfig.minBuyAmount || undefined,
-    maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-    minSellAmount: updatedConfig.minSellAmount || undefined,
-    maxSellAmount: updatedConfig.maxSellAmount || undefined,
-    marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-    enabled: updatedConfig.enabled,
-    authorized: updatedConfig.authorized,
-    traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-    createdAt: updatedConfig.createdAt,
-    updatedAt: updatedConfig.updatedAt,
-  };
+  // Log config update
+  const userLogger = getUserLogger(userId);
+  userLogger.configUpdated(configId, 'trading', updates);
+
+  return mapConfigToResponse(updatedConfig);
 }
 
 /**
@@ -332,30 +345,29 @@ export async function enableCopyTrading(
     throw new Error('Copy trading must be authorized before it can be enabled');
   }
 
+  // Prepare update data
+  const updateData: any = {
+    enabled: true,
+    status: 'active',
+  };
+
+  // Set start date if duration is configured and not already set
+  if (config.durationDays && !config.startDate) {
+    updateData.startDate = new Date();
+  }
+
+  // Set initial reset date for max trades per day if not set
+  if (config.maxBuyTradesPerDay && !config.lastResetDate) {
+    updateData.lastResetDate = new Date();
+    updateData.tradesCountToday = 0;
+  }
+
   const updatedConfig = await prisma.copyTradingConfig.update({
     where: { id: configId },
-    data: { enabled: true },
+    data: updateData,
   });
 
-  return {
-    id: updatedConfig.id,
-    targetTraderAddress: updatedConfig.targetTraderAddress,
-    copyBuyTrades: updatedConfig.copyBuyTrades,
-    copySellTrades: updatedConfig.copySellTrades,
-    amountType: updatedConfig.amountType,
-    buyAmount: updatedConfig.buyAmount,
-    sellAmount: updatedConfig.sellAmount,
-    minBuyAmount: updatedConfig.minBuyAmount || undefined,
-    maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-    minSellAmount: updatedConfig.minSellAmount || undefined,
-    maxSellAmount: updatedConfig.maxSellAmount || undefined,
-    marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-    enabled: updatedConfig.enabled,
-    authorized: updatedConfig.authorized,
-    traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-    createdAt: updatedConfig.createdAt,
-    updatedAt: updatedConfig.updatedAt,
-  };
+  return mapConfigToResponse(updatedConfig);
 }
 
 /**
@@ -378,28 +390,160 @@ export async function disableCopyTrading(
 
   const updatedConfig = await prisma.copyTradingConfig.update({
     where: { id: configId },
-    data: { enabled: false },
+    data: { enabled: false, status: 'disabled' },
   });
 
-  return {
-    id: updatedConfig.id,
-    targetTraderAddress: updatedConfig.targetTraderAddress,
-    copyBuyTrades: updatedConfig.copyBuyTrades,
-    copySellTrades: updatedConfig.copySellTrades,
-    amountType: updatedConfig.amountType,
-    buyAmount: updatedConfig.buyAmount,
-    sellAmount: updatedConfig.sellAmount,
-    minBuyAmount: updatedConfig.minBuyAmount || undefined,
-    maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-    minSellAmount: updatedConfig.minSellAmount || undefined,
-    maxSellAmount: updatedConfig.maxSellAmount || undefined,
-    marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-    enabled: updatedConfig.enabled,
-    authorized: updatedConfig.authorized,
-    traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-    createdAt: updatedConfig.createdAt,
-    updatedAt: updatedConfig.updatedAt,
-  };
+  return mapConfigToResponse(updatedConfig);
+}
+
+/**
+ * Pause copy trading (temporarily stop monitoring and executing trades)
+ */
+export async function pauseCopyTrading(
+  configId: string,
+  userId: string
+): Promise<CopyTradingConfigResponse> {
+  const config = await prisma.copyTradingConfig.findFirst({
+    where: {
+      id: configId,
+      userId,
+    },
+  });
+
+  if (!config) {
+    throw new Error('Copy trading configuration not found');
+  }
+
+  const updatedConfig = await prisma.copyTradingConfig.update({
+    where: { id: configId },
+    data: { status: 'paused' },
+  });
+
+  return mapConfigToResponse(updatedConfig);
+}
+
+/**
+ * Resume copy trading (resume monitoring and executing trades)
+ */
+export async function resumeCopyTrading(
+  configId: string,
+  userId: string
+): Promise<CopyTradingConfigResponse> {
+  const config = await prisma.copyTradingConfig.findFirst({
+    where: {
+      id: configId,
+      userId,
+    },
+  });
+
+  if (!config) {
+    throw new Error('Copy trading configuration not found');
+  }
+
+  if (!config.authorized) {
+    throw new Error('Copy trading must be authorized before it can be resumed');
+  }
+
+  // Check if duration has expired
+  if (config.durationDays && config.startDate) {
+    const now = new Date();
+    const startDate = new Date(config.startDate);
+    const daysElapsed = (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+    
+    if (daysElapsed >= config.durationDays) {
+      throw new Error('Copy trading duration has expired. Cannot resume.');
+    }
+  }
+
+  // Check if max trades per day has been exhausted
+  if (config.maxBuyTradesPerDay && config.lastResetDate) {
+    const now = new Date();
+    const lastReset = new Date(config.lastResetDate);
+    const hoursSinceReset = (now.getTime() - lastReset.getTime()) / (1000 * 60 * 60);
+    
+    if (hoursSinceReset < 24 && config.tradesCountToday >= config.maxBuyTradesPerDay) {
+      throw new Error('Maximum buy trades per day has been exhausted. Wait 24 hours to reset.');
+    }
+  }
+
+  const updatedConfig = await prisma.copyTradingConfig.update({
+    where: { id: configId },
+    data: { status: 'active' },
+  });
+
+  return mapConfigToResponse(updatedConfig);
+}
+
+/**
+ * Update copy trading configuration with new limits
+ */
+export async function updateCopyTradingLimits(
+  configId: string,
+  userId: string,
+  updates: {
+    maxBuyTradesPerDay?: number | null;
+    durationDays?: number | null;
+  }
+): Promise<CopyTradingConfigResponse> {
+  const config = await prisma.copyTradingConfig.findFirst({
+    where: {
+      id: configId,
+      userId,
+    },
+  });
+
+  if (!config) {
+    throw new Error('Copy trading configuration not found');
+  }
+
+  // Validate maxBuyTradesPerDay
+  if (updates.maxBuyTradesPerDay !== undefined && updates.maxBuyTradesPerDay !== null) {
+    if (updates.maxBuyTradesPerDay < 0) {
+      throw new Error('Maximum buy trades per day cannot be negative');
+    }
+  }
+
+  // Validate durationDays
+  if (updates.durationDays !== undefined && updates.durationDays !== null) {
+    if (updates.durationDays < 0) {
+      throw new Error('Duration days cannot be negative');
+    }
+  }
+
+  const updateData: any = {};
+
+  if (updates.maxBuyTradesPerDay !== undefined) {
+    updateData.maxBuyTradesPerDay = updates.maxBuyTradesPerDay;
+    // Reset trade count if limit is being changed
+    if (updates.maxBuyTradesPerDay === null) {
+      // Unlimited - reset count
+      updateData.tradesCountToday = 0;
+      updateData.lastResetDate = null;
+    } else if (updates.maxBuyTradesPerDay !== config.maxBuyTradesPerDay) {
+      // New limit - reset count and reset date
+      updateData.tradesCountToday = 0;
+      updateData.lastResetDate = new Date();
+    }
+  }
+
+  if (updates.durationDays !== undefined) {
+    updateData.durationDays = updates.durationDays;
+    // Set start date if not already set
+    if (updates.durationDays !== null && !config.startDate) {
+      updateData.startDate = new Date();
+    }
+    // Reset start date if duration is removed
+    if (updates.durationDays === null) {
+      updateData.startDate = null;
+    }
+  }
+
+  const updatedConfig = await prisma.copyTradingConfig.update({
+    where: { id: configId },
+    data: updateData,
+  });
+
+  return mapConfigToResponse(updatedConfig);
 }
 
 /**
@@ -487,25 +631,7 @@ export async function prepareAuthorizationTransaction(
   }
 
   return {
-    config: {
-      id: config.id,
-      targetTraderAddress: config.targetTraderAddress,
-      copyBuyTrades: config.copyBuyTrades,
-      copySellTrades: config.copySellTrades,
-      amountType: config.amountType,
-      buyAmount: config.buyAmount,
-      sellAmount: config.sellAmount,
-      minBuyAmount: config.minBuyAmount || undefined,
-      maxBuyAmount: config.maxBuyAmount || undefined,
-      minSellAmount: config.minSellAmount || undefined,
-      maxSellAmount: config.maxSellAmount || undefined,
-      marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
-      enabled: config.enabled,
-      authorized: config.authorized,
-      traderInfo: config.traderInfo ? JSON.parse(config.traderInfo) : undefined,
-      createdAt: config.createdAt,
-      updatedAt: config.updatedAt,
-    },
+    config: mapConfigToResponse(config),
       transaction,
       safeAddress: proxyWallet,
     };
@@ -585,25 +711,7 @@ export async function confirmAuthorizationTransaction(
     });
 
     return {
-      config: {
-        id: updatedConfig.id,
-        targetTraderAddress: updatedConfig.targetTraderAddress,
-        copyBuyTrades: updatedConfig.copyBuyTrades,
-        copySellTrades: updatedConfig.copySellTrades,
-        amountType: updatedConfig.amountType,
-        buyAmount: updatedConfig.buyAmount,
-        sellAmount: updatedConfig.sellAmount,
-        minBuyAmount: updatedConfig.minBuyAmount || undefined,
-        maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-        minSellAmount: updatedConfig.minSellAmount || undefined,
-        maxSellAmount: updatedConfig.maxSellAmount || undefined,
-        marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-        enabled: updatedConfig.enabled,
-        authorized: updatedConfig.authorized,
-        traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-        createdAt: updatedConfig.createdAt,
-        updatedAt: updatedConfig.updatedAt,
-      },
+      config: mapConfigToResponse(updatedConfig),
       safeTxHash,
     };
   } catch (error) {
@@ -615,25 +723,7 @@ export async function confirmAuthorizationTransaction(
     });
 
     return {
-      config: {
-        id: updatedConfig.id,
-        targetTraderAddress: updatedConfig.targetTraderAddress,
-        copyBuyTrades: updatedConfig.copyBuyTrades,
-        copySellTrades: updatedConfig.copySellTrades,
-        amountType: updatedConfig.amountType,
-        buyAmount: updatedConfig.buyAmount,
-        sellAmount: updatedConfig.sellAmount,
-        minBuyAmount: updatedConfig.minBuyAmount || undefined,
-        maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-        minSellAmount: updatedConfig.minSellAmount || undefined,
-        maxSellAmount: updatedConfig.maxSellAmount || undefined,
-        marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-        enabled: updatedConfig.enabled,
-        authorized: updatedConfig.authorized,
-        traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-        createdAt: updatedConfig.createdAt,
-        updatedAt: updatedConfig.updatedAt,
-      },
+      config: mapConfigToResponse(updatedConfig),
       safeTxHash,
     };
   }
@@ -704,6 +794,20 @@ export async function prepareConfigWithAuthorization(
     throw new Error('Maximum sell amount cannot be negative');
   }
 
+  // Validate maxBuyTradesPerDay if provided
+  if (input.maxBuyTradesPerDay !== undefined && input.maxBuyTradesPerDay !== null) {
+    if (input.maxBuyTradesPerDay < 0) {
+      throw new Error('Maximum buy trades per day cannot be negative');
+    }
+  }
+
+  // Validate durationDays if provided
+  if (input.durationDays !== undefined && input.durationDays !== null) {
+    if (input.durationDays < 0) {
+      throw new Error('Duration days cannot be negative');
+    }
+  }
+
   // Check if user already has a config for this trader
   const existingConfig = await prisma.copyTradingConfig.findFirst({
     where: {
@@ -747,7 +851,7 @@ export async function prepareConfigWithAuthorization(
 export async function createConfigWithAuthorization(
   userId: string,
   configData: CopyTradingConfigInput,
-  signedTransaction: any // Ignored - no longer needed
+  _signedTransaction: any // Ignored - no longer needed
 ): Promise<{
   config: CopyTradingConfigResponse;
   safeTxHash: string;
@@ -767,8 +871,6 @@ export async function createConfigWithAuthorization(
     throw new Error('User does not have a proxy wallet');
   }
 
-  // Import here to avoid circular dependency
-  const { config: appConfig } = await import('../config/env');
   // Authorization is no longer required - derived wallets handle everything via CLOB client
   // Skip relayer authorization check and create config directly
   console.log('✅ Skipping relayer authorization check. Derived wallets handle all operations via CLOB client.');
@@ -783,25 +885,7 @@ export async function createConfigWithAuthorization(
   });
 
   return {
-    config: {
-      id: updatedConfig.id,
-      targetTraderAddress: updatedConfig.targetTraderAddress,
-      copyBuyTrades: updatedConfig.copyBuyTrades,
-      copySellTrades: updatedConfig.copySellTrades,
-      amountType: updatedConfig.amountType,
-      buyAmount: updatedConfig.buyAmount,
-      sellAmount: updatedConfig.sellAmount,
-      minBuyAmount: updatedConfig.minBuyAmount || undefined,
-      maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-      minSellAmount: updatedConfig.minSellAmount || undefined,
-      maxSellAmount: updatedConfig.maxSellAmount || undefined,
-      marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-      enabled: updatedConfig.enabled,
-      authorized: true,
-      traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-      createdAt: updatedConfig.createdAt,
-      updatedAt: updatedConfig.updatedAt,
-    },
+    config: mapConfigToResponse(updatedConfig),
     safeTxHash: 'not_required',
     authorizationStatus: 'not_required',
     message: 'Authorization not required. Derived wallets handle all operations via CLOB client.',
@@ -835,29 +919,13 @@ export async function authorizeCopyTrading(
     data: { authorized: true },
   });
 
-  return {
-    id: updatedConfig.id,
-    targetTraderAddress: updatedConfig.targetTraderAddress,
-    copyBuyTrades: updatedConfig.copyBuyTrades,
-    copySellTrades: updatedConfig.copySellTrades,
-    amountType: updatedConfig.amountType,
-    buyAmount: updatedConfig.buyAmount,
-    sellAmount: updatedConfig.sellAmount,
-    minBuyAmount: updatedConfig.minBuyAmount || undefined,
-    maxBuyAmount: updatedConfig.maxBuyAmount || undefined,
-    minSellAmount: updatedConfig.minSellAmount || undefined,
-    maxSellAmount: updatedConfig.maxSellAmount || undefined,
-    marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
-    enabled: updatedConfig.enabled,
-    authorized: updatedConfig.authorized,
-    traderInfo: updatedConfig.traderInfo ? JSON.parse(updatedConfig.traderInfo) : undefined,
-    createdAt: updatedConfig.createdAt,
-    updatedAt: updatedConfig.updatedAt,
-  };
+  return mapConfigToResponse(updatedConfig);
 }
 
 /**
  * Delete copy trading configuration
+ * Note: With onDelete: SetNull, Prisma will automatically set configId to null
+ * for all related trades, preserving trade history even after config deletion.
  */
 export async function deleteCopyTradingConfig(
   configId: string,
@@ -874,6 +942,8 @@ export async function deleteCopyTradingConfig(
     throw new Error('Copy trading configuration not found');
   }
 
+  // Delete the config - Prisma will automatically set configId to null
+  // for all related CopiedTrade records due to onDelete: SetNull
   await prisma.copyTradingConfig.delete({
     where: { id: configId },
   });

@@ -19,8 +19,68 @@ import { closeQueues } from './services/queue';
 
 const app: Express = express();
 
+// CORS configuration - allow requests from frontend origins
+const corsOptions = {
+  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'https://polysignal.io',
+      'https://www.polysignal.io',
+      'https://app.polysignal.io',
+      'https://lovable.dev',
+      'https://*.lovable.dev', // Allow all lovable.dev subdomains
+    ];
+
+    // Check if origin matches any allowed pattern
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (allowed.includes('*')) {
+        // Handle wildcard subdomains (e.g., *.lovable.dev)
+        const pattern = allowed.replace('*.', '');
+        return origin.endsWith(pattern);
+      }
+      return origin === allowed;
+    });
+
+    // Also allow any origin that ends with .lovable.dev, .lovable.app, or .lovableproject.com (including subdomains)
+    const isLovableSubdomain = 
+      origin === 'https://lovable.dev' || 
+      origin === 'https://lovable.app' ||
+      origin === 'https://lovableproject.com' ||
+      origin.endsWith('.lovable.dev') ||
+      origin.endsWith('.lovable.app') ||
+      origin.endsWith('.lovableproject.com');
+    
+    // Also allow polysignal.io and its subdomains
+    const isPolysignalDomain = origin === 'https://polysignal.io' || origin.endsWith('.polysignal.io');
+
+    if (isAllowed || isLovableSubdomain || isPolysignalDomain) {
+      callback(null, true);
+    } else {
+      // In development, allow all origins
+      if (!isProduction) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

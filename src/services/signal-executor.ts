@@ -1,5 +1,5 @@
 import { prisma } from '../config/database';
-import { calculatePositionSize, validateTradeAmount, validateMarketCategory } from './position-sizer';
+import { calculatePositionSize } from './position-sizer';
 import { ethers } from 'ethers';
 import { executeBuyTrade, executeSellTrade } from './polymarket-executor';
 import { monitorOrderSettlement } from './order-monitor';
@@ -248,6 +248,14 @@ function categorizeFailure(errorMessage: string): { failureReason: string; failu
   if (lowerMessage.includes('min size') || lowerMessage.includes('minimum')) {
     return {
       failureReason: 'below_minimum_size',
+      failureCategory: 'validation',
+    };
+  }
+  
+  // Price validation failures
+  if (lowerMessage.includes('invalid price') || (lowerMessage.includes('price') && (lowerMessage.includes('min:') || lowerMessage.includes('max:')))) {
+    return {
+      failureReason: 'invalid_price',
       failureCategory: 'validation',
     };
   }

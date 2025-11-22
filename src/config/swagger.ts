@@ -1,5 +1,17 @@
 import swaggerJsdoc from 'swagger-jsdoc';
-import { config } from './env';
+import { config, isProduction } from './env';
+import path from 'path';
+
+// Use different paths for development (TypeScript) vs production (JavaScript)
+const apiPaths = isProduction
+  ? [
+      path.join(__dirname, '../routes/**/*.js'),
+      path.join(__dirname, '../index.js'),
+    ]
+  : [
+      './src/routes/**/*.ts',
+      './src/index.ts',
+    ];
 
 const options: swaggerJsdoc.Options = {
   definition: {
@@ -11,7 +23,11 @@ const options: swaggerJsdoc.Options = {
     },
     servers: [
       {
-        url: config.app.url,
+        url: 'https://poly.dev.api.polysignal.io',
+        description: 'Production server',
+      },
+      {
+        url: 'http://localhost:3001',
         description: 'Development server',
       },
     ],
@@ -25,7 +41,7 @@ const options: swaggerJsdoc.Options = {
       },
     },
   },
-  apis: ['./src/routes/**/*.ts', './src/index.ts'], // Paths to files containing OpenAPI definitions
+  apis: apiPaths, // Paths to files containing OpenAPI definitions
 };
 
 export const swaggerSpec = swaggerJsdoc(options);

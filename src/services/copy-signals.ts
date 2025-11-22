@@ -348,6 +348,24 @@ export async function disableCopySignals(
   });
 
   if (!config) {
+    // Check if config exists but belongs to different user
+    const configExists = await prisma.copySignalConfig.findUnique({
+      where: { id: configId },
+    });
+    
+    if (configExists) {
+      throw new Error('Copy signal configuration not found or access denied');
+    }
+    
+    // Check if this is actually a copy trading config (wrong endpoint)
+    const copyTradingConfig = await prisma.copyTradingConfig.findUnique({
+      where: { id: configId },
+    });
+    
+    if (copyTradingConfig) {
+      throw new Error('This is a copy trading configuration, not a copy signal configuration. Use /copytrading/config/{configId}/disable instead.');
+    }
+    
     throw new Error('Copy signal configuration not found');
   }
 

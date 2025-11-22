@@ -47,6 +47,7 @@ async function seedTestTrades() {
   const testTrades = [
     // Executed trades with wins
     {
+      userId: testUser.id,
       configId: testConfig.id,
       originalTrader: testTraderAddress,
       originalTxHash: `0x${Math.random().toString(16).substring(2, 66)}`,
@@ -69,6 +70,7 @@ async function seedTestTrades() {
       resolutionPrice: '0.75',
     },
     {
+      userId: testUser.id,
       configId: testConfig.id,
       originalTrader: testTraderAddress,
       originalTxHash: `0x${Math.random().toString(16).substring(2, 66)}`,
@@ -92,6 +94,7 @@ async function seedTestTrades() {
     },
     // Executed trades with losses
     {
+      userId: testUser.id,
       configId: testConfig.id,
       originalTrader: testTraderAddress,
       originalTxHash: `0x${Math.random().toString(16).substring(2, 66)}`,
@@ -115,6 +118,7 @@ async function seedTestTrades() {
     },
     // Pending trades
     {
+      userId: testUser.id,
       configId: testConfig.id,
       originalTrader: testTraderAddress,
       originalTxHash: `0x${Math.random().toString(16).substring(2, 66)}`,
@@ -135,6 +139,7 @@ async function seedTestTrades() {
     },
     // Failed trades
     {
+      userId: testUser.id,
       configId: testConfig.id,
       originalTrader: testTraderAddress,
       originalTxHash: `0x${Math.random().toString(16).substring(2, 66)}`,
@@ -153,6 +158,7 @@ async function seedTestTrades() {
     },
     // Sell trades
     {
+      userId: testUser.id,
       configId: testConfig.id,
       originalTrader: testTraderAddress,
       originalTxHash: `0x${Math.random().toString(16).substring(2, 66)}`,

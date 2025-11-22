@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import {
   createCopySignalConfig,
@@ -11,7 +11,7 @@ import {
   deleteCopySignalConfig,
 } from '../services/copy-signals';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * @swagger

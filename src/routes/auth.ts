@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { generateNonce, verifyAndAuthenticate, isUsernameAvailable, setUsername } from '../services/auth';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * @swagger
@@ -120,7 +120,15 @@ router.post('/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    const result = await verifyAndAuthenticate(message, signature);
+    // Get client IP address
+    const ipAddress = req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
+                     req.headers['x-real-ip']?.toString() ||
+                     req.connection?.remoteAddress ||
+                     req.socket?.remoteAddress ||
+                     req.ip ||
+                     'unknown';
+
+    const result = await verifyAndAuthenticate(message, signature, ipAddress);
     res.json(result);
   } catch (error) {
     console.error('Authentication error:', error);

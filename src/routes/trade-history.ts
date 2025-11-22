@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import {
   getTradeHistoryForConfig,
@@ -9,7 +9,7 @@ import {
 } from '../services/trade-history';
 import { prisma } from '../config/database';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * @swagger
@@ -54,7 +54,7 @@ const router = Router();
  *       200:
  *         description: Trade history retrieved successfully
  */
-router.get('/config/:configId', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/config/:configId', authenticateToken, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { configId } = req.params;
     const { limit, offset, status, tradeType } = req.query;
@@ -66,11 +66,13 @@ router.get('/config/:configId', authenticateToken, async (req: AuthRequest, res:
     });
 
     if (!config) {
-      return res.status(404).json({ error: 'Config not found' });
+      res.status(404).json({ error: 'Config not found' });
+      return;
     }
 
-    if (config.userId !== req.user!.id) {
-      return res.status(403).json({ error: 'Access denied' });
+    if (config.userId !== req.userId) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
     }
 
     const history = await getTradeHistoryForConfig(configId, {
@@ -136,7 +138,12 @@ router.get('/user', authenticateToken, async (req: AuthRequest, res: Response) =
   try {
     const { limit, offset, status, tradeType, configId } = req.query;
 
-    const history = await getTradeHistoryForUser(req.user!.id, {
+    if (!req.userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    const history = await getTradeHistoryForUser(req.userId, {
       limit: limit ? parseInt(limit as string) : undefined,
       offset: offset ? parseInt(offset as string) : undefined,
       status: status as string,
@@ -173,7 +180,7 @@ router.get('/user', authenticateToken, async (req: AuthRequest, res: Response) =
  *       200:
  *         description: Trade statistics retrieved successfully
  */
-router.get('/config/:configId/stats', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/config/:configId/stats', authenticateToken, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { configId } = req.params;
 
@@ -184,11 +191,13 @@ router.get('/config/:configId/stats', authenticateToken, async (req: AuthRequest
     });
 
     if (!config) {
-      return res.status(404).json({ error: 'Config not found' });
+      res.status(404).json({ error: 'Config not found' });
+      return;
     }
 
-    if (config.userId !== req.user!.id) {
-      return res.status(403).json({ error: 'Access denied' });
+    if (config.userId !== req.userId) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
     }
 
     const stats = await getTradeStatsForConfig(configId);
@@ -216,7 +225,12 @@ router.get('/config/:configId/stats', authenticateToken, async (req: AuthRequest
  */
 router.get('/user/stats', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const stats = await getTradeStatsForUser(req.user!.id);
+    if (!req.userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
+    }
+
+    const stats = await getTradeStatsForUser(req.userId);
     res.json(stats);
   } catch (error) {
     console.error('Error fetching trade stats for user:', error);
@@ -245,7 +259,7 @@ router.get('/user/stats', authenticateToken, async (req: AuthRequest, res: Respo
  *       200:
  *         description: Failure statistics retrieved successfully
  */
-router.get('/failures', authenticateToken, async (req: AuthRequest, res: Response) => {
+router.get('/failures', authenticateToken, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { configId } = req.query;
 
@@ -257,17 +271,24 @@ router.get('/failures', authenticateToken, async (req: AuthRequest, res: Respons
       });
 
       if (!config) {
-        return res.status(404).json({ error: 'Config not found' });
+        res.status(404).json({ error: 'Config not found' });
+        return;
       }
 
-      if (config.userId !== req.user!.id) {
-        return res.status(403).json({ error: 'Access denied' });
+      if (config.userId !== req.userId) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
       }
+    }
+
+    if (!req.userId) {
+      res.status(401).json({ error: 'User not authenticated' });
+      return;
     }
 
     const stats = await getFailureStats(
       configId as string | undefined,
-      configId ? undefined : req.user!.id
+      configId ? undefined : req.userId
     );
 
     res.json(stats);

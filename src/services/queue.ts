@@ -1,6 +1,5 @@
 import Queue from 'bull';
 import { config } from '../config/env';
-import { redis } from '../config/redis';
 import { isProduction } from '../config/env';
 
 // Create Redis connection for Bull
@@ -44,6 +43,10 @@ const getRedisConnection = () => {
 };
 
 // Trade execution queue
+// Rate limiting: Order submission is 40/s sustained (2400/60s)
+// To be safe, we'll process max 1 trade every 50ms = 20 trades/second
+// This leaves headroom for other API calls (market info, orderbook, etc.)
+// The limiter coordinates across ALL workers via Redis, ensuring global rate limit compliance
 export const tradeExecutionQueue = new Queue('trade-execution', {
   redis: getRedisConnection(),
   defaultJobOptions: {
@@ -55,6 +58,14 @@ export const tradeExecutionQueue = new Queue('trade-execution', {
     },
     removeOnComplete: true,
     removeOnFail: false, // Keep failed jobs for debugging
+  },
+  // Rate limit: Process max 1 job every 50ms (20 jobs/second globally across all workers)
+  // This ensures we stay well under the 40/s order submission limit
+  // and leaves room for other API calls during trade execution
+  // Bull's limiter uses Redis to coordinate across multiple worker instances
+  limiter: {
+    max: 1, // Process 1 job at a time globally
+    duration: 50, // Every 50ms (20 jobs/second max across all workers)
   },
   settings: {
     maxStalledCount: 1, // Prevent jobs from being marked as stalled too quickly

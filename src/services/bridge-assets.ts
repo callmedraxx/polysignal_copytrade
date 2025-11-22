@@ -1,4 +1,3 @@
-import { config } from '../config/env';
 import { prisma } from '../config/database';
 import { isProduction } from '../config/env';
 import { logger } from '../utils/logger';
@@ -36,7 +35,7 @@ export async function fetchSupportedAssets(): Promise<SupportedAsset[]> {
       throw new Error(`Failed to fetch supported assets: ${response.status} ${response.statusText}`);
     }
     
-    const data: SupportedAssetsResponse = await response.json();
+    const data = await response.json() as SupportedAssetsResponse;
     return data.supportedAssets || [];
   } catch (error) {
     logger.error('Error fetching supported assets from Polymarket Bridge API', {

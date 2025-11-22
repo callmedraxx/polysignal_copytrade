@@ -1,5 +1,4 @@
 import { prisma } from '../config/database';
-import { ethers } from 'ethers';
 
 /**
  * Complete lifecycle view of a trade from start to finish
@@ -123,9 +122,13 @@ export async function getTradeLifecycle(
   // Calculate slippage
   const slippage = calculateSlippage(trade.originalPrice, trade.copiedPrice);
 
+  if (!trade.config) {
+    throw new Error(`Trade ${trade.id} has no associated config`);
+  }
+
   return {
     id: trade.id,
-    configId: trade.configId,
+    configId: trade.configId || '',
     traderAddress: trade.config.targetTraderAddress,
     marketId: trade.marketId,
     marketQuestion: trade.marketQuestion,
@@ -185,7 +188,7 @@ export async function getTradeLifecycle(
     } : null,
     
     createdAt: trade.createdAt,
-    updatedAt: trade.updatedAt,
+    updatedAt: trade.createdAt, // Use createdAt as fallback since updatedAt not in query
   };
 }
 
@@ -241,13 +244,15 @@ export async function getTradesLifecycle(
     prisma.copiedTrade.count({ where }),
   ]);
 
-  const lifecycleTrades: TradeLifecycle[] = trades.map((trade) => {
-    const slippage = calculateSlippage(trade.originalPrice, trade.copiedPrice);
+  const lifecycleTrades: TradeLifecycle[] = trades
+    .filter((trade) => trade.config && trade.configId)
+    .map((trade) => {
+      const slippage = calculateSlippage(trade.originalPrice, trade.copiedPrice);
 
-    return {
-      id: trade.id,
-      configId: trade.configId,
-      traderAddress: trade.config.targetTraderAddress,
+      return {
+        id: trade.id,
+        configId: trade.configId!,
+        traderAddress: trade.config!.targetTraderAddress,
       marketId: trade.marketId,
       marketQuestion: trade.marketQuestion,
       
@@ -306,7 +311,7 @@ export async function getTradesLifecycle(
       } : null,
       
       createdAt: trade.createdAt,
-      updatedAt: trade.updatedAt,
+      updatedAt: trade.createdAt, // Use createdAt as fallback since updatedAt not in query
     };
   });
 
@@ -454,7 +459,12 @@ export async function getEnhancedStatistics(
     ? (totalVolume / successfulTrades.length).toFixed(6)
     : '0';
   
-  const buyTrades = trades.filter(t => t.tradeType === 'buy' && t.costBasis);
+  // Only count successful buy trades (settled or executed, not failed)
+  const buyTrades = trades.filter(t => 
+    t.tradeType === 'buy' && 
+    t.costBasis && 
+    (t.status === 'settled' || t.status === 'executed')
+  );
   const totalInvested = buyTrades.reduce((sum, t) => sum + parseFloat(t.costBasis || t.copiedAmount || '0'), 0);
   
   const sellTrades = trades.filter(t => t.tradeType === 'sell' && t.copiedAmount);

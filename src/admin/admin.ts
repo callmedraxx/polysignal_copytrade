@@ -1,5 +1,5 @@
 import { Express } from 'express';
-import { config, isDevelopment } from '../config/env';
+import { config, isDevelopment, isProduction } from '../config/env';
 
 export const setupAdmin = async (app: Express) => {
   // Skip AdminJS in development mode since we're using in-memory database
@@ -10,22 +10,33 @@ export const setupAdmin = async (app: Express) => {
 
   // Lazy load AdminJS only in production to avoid import errors in development
   try {
-    // Use require for dynamic loading in CommonJS
-    const AdminJS = require('adminjs').default;
-    const AdminJSExpress = require('@adminjs/express').default;
-    const { Database, Resource } = require('@adminjs/prisma');
-    const { prisma } = require('../config/database');
+    // Use require for CommonJS modules
+    const adminjsModule = require('adminjs');
+    const AdminJS = adminjsModule.default || adminjsModule;
+    
+    // @adminjs/express v5 is CommonJS compatible
+    const AdminJSExpress = require('@adminjs/express');
+    const Connect = require('connect-pg-simple');
+    const session = require('express-session');
+    
+    // Use Sequelize adapter instead of Prisma
+    const { Database, Resource } = require('@adminjs/sequelize');
+    const { Sequelize } = require('sequelize');
+    
+    // Create Sequelize connection to the same PostgreSQL database
+    const sequelize = new Sequelize(config.database.url, {
+      dialect: 'postgres',
+      logging: false, // Set to console.log if you want to see SQL queries
+    });
 
-    // Initialize AdminJS with Prisma adapter
+    // Initialize AdminJS with Sequelize adapter
     AdminJS.registerAdapter({ Database, Resource });
 
+    // For now, just use the database connection - AdminJS will auto-discover tables
     const adminJs = new AdminJS({
-      resources: [
-        {
-          resource: { model: prisma.user, client: prisma },
-          options: {},
-        },
-      ],
+      databases: [sequelize],
+
+    // Resources will be auto-discovered from the database
       rootPath: '/admin',
       branding: {
         companyName: config.app.name,
@@ -33,10 +44,21 @@ export const setupAdmin = async (app: Express) => {
       },
     });
 
+    // Setup PostgreSQL session store for production
+    const ConnectSession = Connect(session);
+    const sessionStore = new ConnectSession({
+      conObject: {
+        connectionString: config.database.url,
+        ssl: false, // Disable SSL for local Docker PostgreSQL
+      },
+      tableName: 'adminjs_session',
+      createTableIfMissing: true,
+    });
+
     const adminRouter = AdminJSExpress.buildAuthenticatedRouter(
       adminJs,
       {
-        authenticate: async (email, password) => {
+        authenticate: async (_email: string, _password: string) => {
           // TODO: Implement authentication logic
           // For now, allow any credentials
           return { email: 'admin@example.com' };
@@ -46,13 +68,15 @@ export const setupAdmin = async (app: Express) => {
       },
       null,
       {
-        resave: false,
-        saveUninitialized: false,
+        store: sessionStore,
+        resave: true,
+        saveUninitialized: true,
         secret: config.adminjs.sessionSecret,
         cookie: {
           httpOnly: true,
-          secure: true,
+          secure: isProduction,
         },
+        name: 'adminjs',
       }
     );
 
@@ -60,8 +84,14 @@ export const setupAdmin = async (app: Express) => {
 
     console.log(`✅ AdminJS panel available at ${config.app.url}/admin`);
   } catch (error) {
-    console.error('⚠️  Failed to load AdminJS:', error);
-    console.log('⚠️  AdminJS will be skipped');
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    // Suppress known AdminJS dependency issues (tiptap/core compatibility)
+    if (errorMessage.includes('@tiptap/core') || errorMessage.includes('canInsertNode')) {
+      console.log('⚠️  AdminJS skipped due to dependency compatibility issue (non-critical)');
+    } else {
+      console.error('⚠️  Failed to load AdminJS:', error);
+      console.log('⚠️  AdminJS will be skipped');
+    }
   }
 };
 

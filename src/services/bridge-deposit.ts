@@ -1,5 +1,3 @@
-import { config } from '../config/env';
-import { prisma } from '../config/database';
 import { logger } from '../utils/logger';
 import { getUserByAddress } from './auth';
 import { getMinDepositAmount } from './bridge-assets';
@@ -204,9 +202,24 @@ export async function createDepositAddresses(userAddress: string): Promise<Creat
       responseFormat: data.depositAddresses ? 'standard' : 'address-object',
     });
     
-    // Return normalized response
+    // Return response preserving the original address structure if it was an object
+    // This allows deposit-options.ts to extract svm and btc addresses
+    let returnAddress: string | { evm?: string; svm?: string; btc?: string };
+    
+    if (data.address && typeof data.address === 'object') {
+      // Preserve the original object structure with evm, svm, btc
+      returnAddress = {
+        evm: data.address.evm || normalizedAddress,
+        svm: data.address.svm,
+        btc: data.address.btc,
+      };
+    } else {
+      // Use normalized string address
+      returnAddress = normalizedAddress;
+    }
+    
     return {
-      address: normalizedAddress,
+      address: returnAddress,
       depositAddresses,
       note: data.note,
     } as CreateDepositResponse;
@@ -237,7 +250,7 @@ export async function getDepositAddressForToken(
     
     const normalizedTokenAddress = tokenAddress.toLowerCase();
     
-    const depositAddress = depositData.depositAddresses.find(
+    const depositAddress = depositData.depositAddresses?.find(
       addr => 
         addr.chainId === chainId && 
         addr.tokenAddress.toLowerCase() === normalizedTokenAddress

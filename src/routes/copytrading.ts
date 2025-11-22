@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, type Router as RouterType } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { verifyTrader, getTraderStats, isValidAddress } from '../services/polymarket';
 import {
@@ -10,10 +10,13 @@ import {
   disableCopyTrading,
   authorizeCopyTrading,
   deleteCopyTradingConfig,
+  pauseCopyTrading,
+  resumeCopyTrading,
+  updateCopyTradingLimits,
 } from '../services/copytrading';
 import { prisma } from '../config/database';
 
-const router = Router();
+const router: RouterType = Router();
 
 /**
  * @swagger
@@ -266,6 +269,9 @@ router.post('/config/prepare', authenticateToken, async (req: AuthRequest, res: 
       minSellAmount,
       maxSellAmount,
       marketCategories,
+      maxBuyTradesPerDay,
+      durationDays,
+      configName,
     } = req.body;
 
     // Validate required fields
@@ -288,12 +294,23 @@ router.post('/config/prepare', authenticateToken, async (req: AuthRequest, res: 
       minSellAmount,
       maxSellAmount,
       marketCategories,
+      maxBuyTradesPerDay,
+      durationDays,
+      configName,
     });
 
     res.json(result);
   } catch (error) {
     console.error('Error preparing copy trading config:', error);
     const errorMessage = error instanceof Error ? error.message : 'Failed to prepare configuration';
+    
+    // Log API error
+    if (req.userLogger) {
+      req.userLogger.apiError('POST', '/copytrading/config/prepare', error, {
+        targetTraderAddress: req.body.targetTraderAddress,
+      });
+    }
+    
     const statusCode = errorMessage.includes('not found') || errorMessage.includes('Invalid') ? 400 : 500;
     res.status(statusCode).json({ error: errorMessage });
   }
@@ -332,6 +349,9 @@ router.post('/config', authenticateToken, async (req: AuthRequest, res: Response
       minSellAmount,
       maxSellAmount,
       marketCategories,
+      maxBuyTradesPerDay,
+      durationDays,
+      configName,
     } = req.body;
 
     // Validate required fields
@@ -353,6 +373,9 @@ router.post('/config', authenticateToken, async (req: AuthRequest, res: Response
       minSellAmount,
       maxSellAmount,
       marketCategories,
+      maxBuyTradesPerDay,
+      durationDays,
+      configName,
     });
 
     res.json(config);
@@ -578,7 +601,7 @@ router.delete('/config/:configId', authenticateToken, async (req: AuthRequest, r
 router.post('/config/create-and-authorize', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId;
-    const { signedTransaction, configData } = req.body;
+    const { configData } = req.body;
 
     if (!userId) {
       res.status(401).json({ error: 'Authentication required' });
@@ -591,14 +614,6 @@ router.post('/config/create-and-authorize', authenticateToken, async (req: AuthR
     }
 
     // Check if relayer is already owner (signedTransaction can be null in this case)
-    const { config: appConfig } = await import('../config/env');
-    const { getSafeOwners } = await import('../services/wallet');
-    const { ethers } = await import('ethers');
-    const prisma = (await import('../config/database')).prisma;
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
 
     // Authorization is no longer required - derived wallets handle everything via CLOB client
     // Skip relayer authorization check for backward compatibility
@@ -826,6 +841,143 @@ router.post('/config/:configId/disable', authenticateToken, async (req: AuthRequ
     console.error('Error disabling copy trading:', error);
     const errorMessage = error instanceof Error ? error.message : 'Failed to disable copy trading';
     const statusCode = errorMessage.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({ error: errorMessage });
+  }
+});
+
+/**
+ * @swagger
+ * /copytrading/config/{configId}/pause:
+ *   post:
+ *     summary: Pause copy trading (temporarily stop monitoring and executing trades)
+ *     tags: [Copy Trading]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: configId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Copy trading paused
+ */
+router.post('/config/:configId/pause', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { configId } = req.params;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const config = await pauseCopyTrading(configId, userId);
+    res.json(config);
+  } catch (error) {
+    console.error('Error pausing copy trading:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to pause copy trading';
+    const statusCode = errorMessage.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({ error: errorMessage });
+  }
+});
+
+/**
+ * @swagger
+ * /copytrading/config/{configId}/resume:
+ *   post:
+ *     summary: Resume copy trading (resume monitoring and executing trades)
+ *     tags: [Copy Trading]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: configId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Copy trading resumed
+ *       400:
+ *         description: Cannot resume (duration expired or max trades exhausted)
+ */
+router.post('/config/:configId/resume', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { configId } = req.params;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const config = await resumeCopyTrading(configId, userId);
+    res.json(config);
+  } catch (error) {
+    console.error('Error resuming copy trading:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to resume copy trading';
+    const statusCode = errorMessage.includes('not found') ? 404 : 
+                       errorMessage.includes('expired') || errorMessage.includes('exhausted') ? 400 : 500;
+    res.status(statusCode).json({ error: errorMessage });
+  }
+});
+
+/**
+ * @swagger
+ * /copytrading/config/{configId}/limits:
+ *   put:
+ *     summary: Update copy trading limits (max trades per day and duration)
+ *     tags: [Copy Trading]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: configId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               maxBuyTradesPerDay:
+ *                 type: number
+ *                 nullable: true
+ *                 description: Maximum number of buy trades per day (null = unlimited)
+ *               durationDays:
+ *                 type: number
+ *                 nullable: true
+ *                 description: Number of days to copy trade for (null = unlimited)
+ *     responses:
+ *       200:
+ *         description: Limits updated
+ */
+router.put('/config/:configId/limits', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { configId } = req.params;
+    const { maxBuyTradesPerDay, durationDays } = req.body;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    const config = await updateCopyTradingLimits(configId, userId, {
+      maxBuyTradesPerDay: maxBuyTradesPerDay !== undefined ? maxBuyTradesPerDay : null,
+      durationDays: durationDays !== undefined ? durationDays : null,
+    });
+    res.json(config);
+  } catch (error) {
+    console.error('Error updating copy trading limits:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to update limits';
+    const statusCode = errorMessage.includes('not found') ? 404 : 
+                       errorMessage.includes('cannot be negative') ? 400 : 500;
     res.status(statusCode).json({ error: errorMessage });
   }
 });

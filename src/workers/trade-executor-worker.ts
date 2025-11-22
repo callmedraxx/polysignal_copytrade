@@ -10,11 +10,13 @@ export function startTradeExecutorWorker(): void {
   console.log('⚡ Starting trade execution worker...');
 
   // Process trade execution jobs with concurrency limit
-  // Limit to 5 concurrent trades to prevent rate limit issues
-  // This ensures we don't exceed:
+  // Concurrency set to 1 to ensure rate limits are respected across all workers
+  // Queue-level rate limiter (in queue.ts) ensures max 1 job per 50ms globally
+  // This prevents multiple workers from submitting orders simultaneously
+  // Rate limits:
+  // - Order submission: 40/s sustained (we process at 20/s max to leave headroom)
   // - API key creation: 50 req/10s (with caching, this should be fine)
-  // - Order submission: 40/s sustained (5 concurrent = ~0.5/s per trade, well under limit)
-  tradeExecutionQueue.process('execute-trade', 5, async (job) => {
+  tradeExecutionQueue.process('execute-trade', 1, async (job) => {
     const { tradeId, configId, originalTrade } = job.data;
     
     console.log(`📊 Processing trade execution: ${tradeId}`);
@@ -34,7 +36,8 @@ export function startTradeExecutorWorker(): void {
   });
 
   // Process signal execution jobs with same concurrency limit
-  tradeExecutionQueue.process('execute-signal', 5, async (job) => {
+  // Concurrency set to 1 to ensure rate limits are respected across all workers
+  tradeExecutionQueue.process('execute-signal', 1, async (job) => {
     const { signalId, configId, originalSignal } = job.data;
     
     console.log(`📊 Processing signal execution: ${signalId}`);

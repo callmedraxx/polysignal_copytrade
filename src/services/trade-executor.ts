@@ -1,10 +1,9 @@
 import { prisma } from '../config/database';
-import { calculatePositionSize, validateTradeAmount, validateMarketCategory } from './position-sizer';
-import { ethers } from 'ethers';
-import { config } from '../config/env';
+import { calculatePositionSize } from './position-sizer';
 import { executeBuyTrade, executeSellTrade } from './polymarket-executor';
-import { isMarketOpen } from './market-status';
+import { ethers } from 'ethers';
 import { monitorOrderSettlement } from './order-monitor';
+import { getUserLogger } from '../utils/user-logger';
 
 export interface TradeExecutionJob {
   tradeId: string;
@@ -44,6 +43,8 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
     }
 
     const copyConfig = copiedTrade.config;
+    const userAddress = copyConfig.user.address;
+    const userLogger = getUserLogger(userAddress);
 
     // Verify config is still enabled and authorized
     if (!copyConfig.enabled || !copyConfig.authorized) {
@@ -61,6 +62,115 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
         // Continue anyway - don't block execution
       }
       return;
+    }
+
+    // Check status (should be 'active', not 'paused' or 'disabled')
+    if (copyConfig.status !== 'active') {
+      try {
+        await prisma.copiedTrade.update({
+          where: { id: tradeId },
+          data: {
+            status: 'skipped',
+            errorMessage: `Copy trading is ${copyConfig.status}`,
+          },
+        });
+        console.log(`⏭️ Trade ${tradeId} skipped: Copy trading status is ${copyConfig.status}`);
+      } catch (updateError) {
+        console.error(`❌ Failed to update trade ${tradeId} status to 'skipped':`, updateError);
+      }
+      return;
+    }
+
+    // Check duration hasn't expired
+    if (copyConfig.durationDays && copyConfig.startDate) {
+      const now = new Date();
+      const startDate = new Date(copyConfig.startDate);
+      const daysElapsed = (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+      
+      if (daysElapsed >= copyConfig.durationDays) {
+        // Auto-pause config
+        try {
+          await prisma.copyTradingConfig.update({
+            where: { id: configId },
+            data: { 
+              status: 'paused',
+              enabled: false,
+            },
+          });
+        } catch (updateError) {
+          console.error(`⚠️ Failed to auto-pause config ${configId}:`, updateError);
+        }
+        
+        try {
+          await prisma.copiedTrade.update({
+            where: { id: tradeId },
+            data: {
+              status: 'skipped',
+              errorMessage: 'Copy trading duration has expired',
+            },
+          });
+          console.log(`⏭️ Trade ${tradeId} skipped: Duration expired`);
+        } catch (updateError) {
+          console.error(`❌ Failed to update trade ${tradeId} status:`, updateError);
+        }
+        return;
+      }
+    }
+
+    // Check max buy trades per day for buy trades
+    if (copiedTrade.tradeType === 'buy' && copyConfig.maxBuyTradesPerDay) {
+      // Refresh config to get latest trade count
+      const refreshedConfig = await prisma.copyTradingConfig.findUnique({
+        where: { id: configId },
+      });
+      
+      if (refreshedConfig) {
+        // Check and reset if needed
+        if (refreshedConfig.lastResetDate) {
+          const now = new Date();
+          const lastReset = new Date(refreshedConfig.lastResetDate);
+          const hoursSinceReset = (now.getTime() - lastReset.getTime()) / (1000 * 60 * 60);
+          
+          if (hoursSinceReset >= 24) {
+            // Reset count
+            await prisma.copyTradingConfig.update({
+              where: { id: configId },
+              data: {
+                tradesCountToday: 0,
+                lastResetDate: new Date(),
+              },
+            });
+            refreshedConfig.tradesCountToday = 0;
+            refreshedConfig.lastResetDate = new Date();
+          }
+        } else {
+          // Set initial reset date if not set
+          await prisma.copyTradingConfig.update({
+            where: { id: configId },
+            data: {
+              lastResetDate: new Date(),
+            },
+          });
+          refreshedConfig.lastResetDate = new Date();
+        }
+        
+        // Check if max reached
+        if (refreshedConfig.maxBuyTradesPerDay && refreshedConfig.tradesCountToday >= refreshedConfig.maxBuyTradesPerDay) {
+          try {
+            await prisma.copiedTrade.update({
+              where: { id: tradeId },
+              data: {
+                status: 'skipped',
+                errorMessage: `Maximum buy trades per day reached (${refreshedConfig.tradesCountToday}/${refreshedConfig.maxBuyTradesPerDay})`,
+              },
+            });
+            console.log(`⏭️ Trade ${tradeId} skipped: Max buy trades per day reached`);
+          } catch (updateError) {
+            console.error(`❌ Failed to update trade ${tradeId} status:`, updateError);
+          }
+          return;
+        }
+      }
     }
 
     // TEMPORARILY DISABLED FOR TESTING: Check if market is still open before executing
@@ -81,6 +191,13 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
     //   }
     //   return;
     // }
+
+    // Log trade execution start
+    userLogger.tradeExecutionStart(tradeId, copiedTrade.marketId, copiedTrade.tradeType, {
+      configId,
+      originalTxHash: copiedTrade.originalTxHash,
+      originalAmount: originalTrade.usdcSize,
+    });
 
     // Calculate position size
     const positionSize = await calculatePositionSize(
@@ -191,6 +308,13 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
         lastError = error instanceof Error ? error : new Error(String(error));
         console.warn(`⚠️ Trade execution attempt ${attempt}/${maxRetries} failed for ${tradeId}:`, lastError.message);
         
+        userLogger.warn('TRADE_EXECUTION', `Trade execution attempt ${attempt}/${maxRetries} failed`, {
+          tradeId,
+          attempt,
+          maxRetries,
+          error: lastError.message,
+        });
+        
         if (attempt < maxRetries) {
           // Wait before retry (exponential backoff)
           const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
@@ -200,8 +324,25 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
     }
 
     if (!executionResult) {
-      throw new Error(`Trade execution failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+      const error = new Error(`Trade execution failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+      userLogger.tradeExecutionError(tradeId, error, {
+        maxRetries,
+        attempts: maxRetries,
+      });
+      throw error;
     }
+
+    // Log trade execution success (before database update)
+    userLogger.tradeExecutionSuccess(
+      tradeId,
+      executionResult.orderId || 'pending',
+      executionResult.txHash || 'pending',
+      {
+        marketId: copiedTrade.marketId,
+        tradeType: copiedTrade.tradeType,
+        copiedAmount: positionSize.amountWei,
+      }
+    );
 
     // Update trade record with order submission result
     // Note: txHash will be updated later when order settles
@@ -219,6 +360,24 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
       });
       console.log(`✅ Trade ${tradeId} order submitted to CLOB: ${executionResult.orderId}`);
       
+      // Increment buy trade count for buy trades
+      if (copiedTrade.tradeType === 'buy' && copyConfig.maxBuyTradesPerDay) {
+        try {
+          await prisma.copyTradingConfig.update({
+            where: { id: configId },
+            data: {
+              tradesCountToday: {
+                increment: 1,
+              },
+              lastResetDate: copyConfig.lastResetDate || new Date(),
+            },
+          });
+        } catch (incrementError) {
+          // Log but don't fail - trade was already executed
+          console.error(`⚠️ Failed to increment trade count for config ${configId}:`, incrementError);
+        }
+      }
+      
       // Start monitoring order settlement in background
       // Don't await - let it run asynchronously
       monitorOrderSettlement(executionResult.orderId, tradeId).catch((error) => {
@@ -234,6 +393,29 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.error(`❌ Error executing trade ${tradeId}:`, errorMessage);
+
+    // Log trade execution error
+    try {
+      const trade = await prisma.copiedTrade.findUnique({
+        where: { id: tradeId },
+        include: {
+          config: {
+            include: {
+              user: true,
+            },
+          },
+        },
+      });
+      if (trade?.config?.user) {
+        const userLogger = getUserLogger(trade.config.user.address);
+        userLogger.tradeExecutionError(tradeId, error, {
+          marketId: trade.marketId,
+          tradeType: trade.tradeType,
+        });
+      }
+    } catch (logError) {
+      // Ignore logging errors
+    }
 
     // Try to update trade record with error, but handle case where trade might not exist
     try {
@@ -295,6 +477,14 @@ function categorizeFailure(errorMessage: string): { failureReason: string; failu
   if (lowerMessage.includes('min size') || lowerMessage.includes('minimum')) {
     return {
       failureReason: 'below_minimum_size',
+      failureCategory: 'validation',
+    };
+  }
+  
+  // Price validation failures
+  if (lowerMessage.includes('invalid price') || (lowerMessage.includes('price') && (lowerMessage.includes('min:') || lowerMessage.includes('max:')))) {
+    return {
+      failureReason: 'invalid_price',
       failureCategory: 'validation',
     };
   }

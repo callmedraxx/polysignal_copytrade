@@ -71,25 +71,14 @@ export async function getConfigStatistics(
 }
 
 /**
- * Get trade statistics for all user's copy trading
+ * Get trade statistics for all user's copy trading (including deleted configs)
  */
 export async function getUserStatistics(userId: string): Promise<TradeStatistics> {
-  // Get all trades for user's configs
-  const configs = await prisma.copyTradingConfig.findMany({
-    where: {
-      userId,
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  const configIds = configs.map((c) => c.id);
-
+  // Get all trades for user through config relationship
   const trades = await prisma.copiedTrade.findMany({
     where: {
-      configId: {
-        in: configIds,
+      config: {
+        userId,
       },
     },
     orderBy: {
@@ -102,34 +91,41 @@ export async function getUserStatistics(userId: string): Promise<TradeStatistics
 
 /**
  * Get statistics per trader (grouped by trader address)
+ * Includes trades from both active and deleted configs
  */
 export async function getTraderStatistics(userId: string): Promise<TraderStatistics[]> {
+  // Get all trades for user through config relationship
+  const allTrades = await prisma.copiedTrade.findMany({
+    where: {
+      config: {
+        userId,
+      },
+    },
+  });
+
+  // Get active configs for trader info
   const configs = await prisma.copyTradingConfig.findMany({
     where: {
       userId,
     },
-    include: {
-      copiedTrades: true,
-    },
   });
 
-  // Group trades by trader address
+  // Group trades by trader address (originalTrader)
   const traderMap = new Map<string, any[]>();
 
-  configs.forEach((config) => {
-    const traderAddress = config.targetTraderAddress.toLowerCase();
+  allTrades.forEach((trade) => {
+    const traderAddress = trade.originalTrader.toLowerCase();
     if (!traderMap.has(traderAddress)) {
       traderMap.set(traderAddress, []);
     }
-    // Handle case where copiedTrades might be undefined or null
-    const trades = Array.isArray(config.copiedTrades) ? config.copiedTrades : [];
-    traderMap.get(traderAddress)!.push(...trades);
+    traderMap.get(traderAddress)!.push(trade);
   });
 
   // Calculate statistics for each trader
   const traderStats: TraderStatistics[] = [];
 
   for (const [traderAddress, trades] of traderMap.entries()) {
+    // Find config for trader info (use first active config if available)
     const config = configs.find(
       (c) => c.targetTraderAddress.toLowerCase() === traderAddress
     );
@@ -365,25 +361,12 @@ export async function getUserTradeHistory(
   page: number;
   pageSize: number;
 }> {
-  const configs = await prisma.copyTradingConfig.findMany({
-    where: {
-      userId,
-    },
-    select: {
-      id: true,
-      targetTraderAddress: true,
-    },
-  });
-
-  const configIds = configs.map((c) => c.id);
-
   const limit = options?.limit || 50;
   const offset = options?.offset || 0;
 
+  // Query trades directly by userId (includes trades from deleted configs)
   const where: any = {
-    configId: {
-      in: configIds,
-    },
+    userId,
   };
 
   if (options?.status) {
@@ -394,15 +377,33 @@ export async function getUserTradeHistory(
     where.outcome = options.outcome;
   }
 
+  // If filtering by trader address, we need to check both active and deleted configs
   if (options?.traderAddress) {
-    const traderConfigIds = configs
-      .filter(
-        (c) => c.targetTraderAddress.toLowerCase() === options.traderAddress!.toLowerCase()
-      )
-      .map((c) => c.id);
-    where.configId = {
-      in: traderConfigIds,
-    };
+    const configs = await prisma.copyTradingConfig.findMany({
+      where: {
+        userId,
+        targetTraderAddress: {
+          equals: options.traderAddress,
+          mode: 'insensitive',
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    const configIds = configs.map((c) => c.id);
+    
+    // Include trades from active configs OR trades with matching originalTrader (for deleted configs)
+    where.OR = [
+      { configId: { in: configIds } },
+      { 
+        configId: null,
+        originalTrader: {
+          equals: options.traderAddress,
+          mode: 'insensitive',
+        },
+      },
+    ];
   }
 
   const [trades, total] = await Promise.all([
@@ -429,8 +430,8 @@ export async function getUserTradeHistory(
     trades: trades.map((trade) => ({
       id: trade.id,
       configId: trade.configId,
-      traderAddress: trade.config.targetTraderAddress,
-      traderInfo: trade.config.traderInfo ? JSON.parse(trade.config.traderInfo) : null,
+      traderAddress: trade.config?.targetTraderAddress || trade.originalTrader,
+      traderInfo: trade.config?.traderInfo ? JSON.parse(trade.config.traderInfo) : null,
       originalTrader: trade.originalTrader,
       originalTxHash: trade.originalTxHash,
       marketId: trade.marketId,

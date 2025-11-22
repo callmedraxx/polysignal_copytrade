@@ -2,18 +2,13 @@ import { ethers } from 'ethers';
 import { Interface } from 'ethers/lib/utils';
 import { OperationType, SafeTransaction } from '@polymarket/builder-relayer-client';
 import { createRelayerClientForUser, getExpectedSafeAddress, deriveWalletForUser } from './relayer-client';
+import { getUserLogger } from '../utils/user-logger';
 // Protocol Kit v6 - try to import, fallback to old SDK if not installed
 let Safe: any;
-let PredictedSafeProps: any;
-let SafeAccountConfig: any;
-let SafeDeploymentConfig: any;
 
 try {
   const protocolKit = require('@safe-global/protocol-kit');
   Safe = protocolKit.default || protocolKit.Safe;
-  PredictedSafeProps = protocolKit.PredictedSafeProps;
-  SafeAccountConfig = protocolKit.SafeAccountConfig;
-  SafeDeploymentConfig = protocolKit.SafeDeploymentConfig;
 } catch (error) {
   console.error('⚠️ Protocol Kit not installed. Please run: npm install @safe-global/protocol-kit@^6.1.1 --legacy-peer-deps');
   throw new Error(
@@ -234,8 +229,10 @@ async function approveUSDCForCTF(
  * @param owners Array of owner addresses to add
  * @param derivedWalletPrivateKey Private key of the derived wallet (current owner)
  * @returns Transaction hash
+ * @internal - Function kept for future use
  */
-async function addOwnersToSafe(
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function _addOwnersToSafe(
   safeAddress: string,
   owners: string[],
   derivedWalletPrivateKey: string
@@ -268,8 +265,8 @@ async function addOwnersToSafe(
 
   console.log(`➕ Adding new owners: ${newOwners.join(', ')}`);
 
-  // Create addOwner transactions for each new owner
-  const transactions = newOwners.map(owner => ({
+  // Create addOwner transactions for each new owner (unused - kept for future use)
+  const _transactions = newOwners.map(owner => ({
     to: safeAddress,
     value: '0',
     data: protocolKit.getContractManager().encode('addOwnerWithThreshold', [
@@ -277,6 +274,7 @@ async function addOwnersToSafe(
       currentOwners.length + 1, // New threshold (all owners must sign)
     ]),
   }));
+  void _transactions; // Mark as intentionally unused
 
   // For multiple owners, we need to use a batch transaction
   // Actually, Safe requires us to add owners one by one and update threshold
@@ -334,10 +332,13 @@ async function addOwnersToSafe(
 async function createProxyWalletViaRelayer(ownerAddress: string): Promise<string> {
   // Normalize owner address
   const normalizedOwnerAddress = ethers.utils.getAddress(ownerAddress.toLowerCase());
+  const userLogger = getUserLogger(ownerAddress);
   
   console.log(`🚀 Creating Safe wallet via Polymarket relayer (gasless)...`);
   console.log(`   User address: ${normalizedOwnerAddress}`);
   console.log(`   Using HD wallet derivation for unique Safe deployment`);
+
+  userLogger.info('SAFE_DEPLOYMENT', 'Initiating Safe wallet deployment via Polymarket relayer');
 
   // Derive wallet for this user
   const derivedWallet = deriveWalletForUser(normalizedOwnerAddress);
@@ -1093,3 +1094,6 @@ export async function executeSafeBatchTransaction(
     );
   }
 }
+
+// Export unused function to mark it as intentionally kept for future use
+export { _addOwnersToSafe };

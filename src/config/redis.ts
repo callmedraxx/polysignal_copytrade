@@ -22,7 +22,7 @@ class InMemoryRedis {
     return this.store.has(key) ? 1 : 0;
   }
 
-  async expire(key: string, seconds: number): Promise<number> {
+  async expire(_key: string, _seconds: number): Promise<number> {
     // In-memory implementation - would need setTimeout for real expiry
     return 1;
   }

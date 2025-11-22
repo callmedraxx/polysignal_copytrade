@@ -7,6 +7,7 @@ import { config } from '../config/env';
 import { prisma } from '../config/database';
 import { createProxyWallet } from './wallet';
 import { preWarmClobClient } from './clob-client-cache';
+import { getUserLogger } from '../utils/user-logger';
 
 export interface AuthResult {
   user: {
@@ -42,7 +43,8 @@ export async function generateNonce(address: string): Promise<string> {
  */
 export async function verifyAndAuthenticate(
   message: string,
-  signature: string
+  signature: string,
+  ipAddress?: string
 ): Promise<AuthResult> {
   try {
     // Parse SIWE message
@@ -73,30 +75,101 @@ export async function verifyAndAuthenticate(
     // Get fields from the parsed message
     const fields = siweMessage;
 
-    // Verify nonce matches what we stored
-    const user = await prisma.user.findUnique({
+    // Check if user already exists in database
+    let user = await prisma.user.findUnique({
       where: { address },
     });
 
+    // Initialize user logger
+    const userLogger = getUserLogger(address, ipAddress);
+
+    // If user exists, verify signature and return user data with new JWT
+    // Skip nonce check and proxy wallet creation for existing users
+    if (user && user.proxyWallet) {
+      // Verify domain matches (allow localhost, polysignal.io and its subdomains)
+      const messageDomain = fields.domain.toLowerCase();
+      
+      // Allow localhost variations
+      const isLocalhost = messageDomain === 'localhost' || messageDomain.startsWith('localhost:');
+      
+      // Allow polysignal.io and any subdomain (e.g., www.polysignal.io, app.polysignal.io)
+      const isPolysignalDomain = messageDomain === 'polysignal.io' || messageDomain.endsWith('.polysignal.io');
+      
+      // Also allow the domain from config.app.url if it's different
+      const expectedDomain = new URL(config.app.url).hostname.toLowerCase();
+      const isExpectedDomain = messageDomain === expectedDomain;
+      
+      if (!isLocalhost && !isPolysignalDomain && !isExpectedDomain) {
+        throw new Error(`Invalid domain: expected localhost, polysignal.io (or subdomain), or ${expectedDomain}, got ${messageDomain}`);
+      }
+
+      // Clear the nonce if it exists (for cleanup)
+      if (user.nonce) {
+        await prisma.user.update({
+          where: { address },
+          data: { nonce: null },
+        });
+      }
+
+      // Generate JWT token for existing user
+      const expiresIn = config.jwt.expiresIn && config.jwt.expiresIn.trim() !== '' 
+        ? config.jwt.expiresIn 
+        : '7d';
+      // @ts-expect-error - expiresIn accepts string values like '7d' at runtime, but TypeScript types are overly strict
+      const token = jwt.sign(
+        {
+          userId: user.id,
+          address: user.address,
+        },
+        config.jwt.secret,
+        {
+          expiresIn,
+        }
+      );
+
+      userLogger.login(user.id.toString(), { address, proxyWallet: user.proxyWallet });
+      console.log(`✅ Existing user authenticated: ${address}`);
+
+      return {
+        user: {
+          id: user.id,
+          address: user.address,
+          username: user.username || undefined,
+          proxyWallet: user.proxyWallet || undefined,
+        },
+        token,
+      };
+    }
+
+    // For new users or users without proxy wallet, do full authentication flow with nonce check
     if (!user || !user.nonce) {
-      throw new Error('User not found or no nonce set');
+      userLogger.error('AUTH', 'Authentication failed: User not found or no nonce set');
+      throw new Error('User not found or no nonce set. Please request a new nonce first.');
     }
 
     if (fields.nonce !== user.nonce) {
+      userLogger.error('AUTH', 'Authentication failed: Invalid nonce', { 
+        expected: user.nonce, 
+        received: fields.nonce 
+      });
       throw new Error('Invalid nonce');
     }
 
-    // Verify domain matches (allow both localhost and production domain)
-    const expectedDomain = new URL(config.app.url).hostname;
+    // Verify domain matches (allow localhost, polysignal.io and its subdomains)
     const messageDomain = fields.domain.toLowerCase();
-    const expectedDomainLower = expectedDomain.toLowerCase();
     
-    // Allow localhost variations and exact domain match
+    // Allow localhost variations
     const isLocalhost = messageDomain === 'localhost' || messageDomain.startsWith('localhost:');
-    const isExpectedDomain = messageDomain === expectedDomainLower;
     
-    if (!isLocalhost && !isExpectedDomain) {
-      throw new Error(`Invalid domain: expected ${expectedDomainLower}, got ${messageDomain}`);
+    // Allow polysignal.io and any subdomain (e.g., www.polysignal.io, app.polysignal.io)
+    const isPolysignalDomain = messageDomain === 'polysignal.io' || messageDomain.endsWith('.polysignal.io');
+    
+    // Also allow the domain from config.app.url if it's different
+    const expectedDomain = new URL(config.app.url).hostname.toLowerCase();
+    const isExpectedDomain = messageDomain === expectedDomain;
+    
+    if (!isLocalhost && !isPolysignalDomain && !isExpectedDomain) {
+      throw new Error(`Invalid domain: expected localhost, polysignal.io (or subdomain), or ${expectedDomain}, got ${messageDomain}`);
     }
 
     // Clear the nonce after successful verification
@@ -107,8 +180,12 @@ export async function verifyAndAuthenticate(
 
     // Check if user already has a proxy wallet
     let updatedUser = user;
-    if (!user.proxyWallet) {
+    const isNewUser = !user.proxyWallet;
+    
+    if (isNewUser) {
+      userLogger.signup(user.id, { address });
       try {
+        userLogger.info('SAFE_DEPLOYMENT', 'Initiating Safe wallet deployment');
         console.log(`🔐 Creating proxy wallet for user: ${address}`);
         // Create proxy wallet on Polygon using Gnosis Safe Factory
         const proxyWalletAddress = await createProxyWallet(address);
@@ -119,6 +196,9 @@ export async function verifyAndAuthenticate(
           data: { proxyWallet: proxyWalletAddress.toLowerCase() },
         });
         
+        userLogger.safeDeployment(proxyWalletAddress, 'pending', { 
+          userId: user.id 
+        });
         console.log(`✅ Proxy wallet created and saved: ${proxyWalletAddress}`);
         
         // Immediately create and cache CLOB client for this user
@@ -126,25 +206,33 @@ export async function verifyAndAuthenticate(
         try {
           console.log(`🔑 Pre-warming CLOB client for user: ${address}`);
           await preWarmClobClient(address);
+          userLogger.info('CLOB_CLIENT', 'CLOB client pre-warmed and cached');
           console.log(`✅ CLOB client pre-warmed and cached for user: ${address}`);
         } catch (error) {
           // Log error but don't fail authentication
           // The client will be created on-demand if needed
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          userLogger.warn('CLOB_CLIENT', 'Failed to pre-warm CLOB client', { error: errorMessage });
           console.error(`⚠️ Failed to pre-warm CLOB client for ${address}:`, errorMessage);
           console.error(`   Client will be created on-demand when needed`);
         }
       } catch (error) {
         // Log error but don't fail authentication
         // User can still sign in, proxy wallet creation can be retried later
+        userLogger.safeDeploymentError(error, { userId: user.id });
         console.error(`⚠️ Failed to create proxy wallet for ${address}:`, error);
         // Continue with authentication even if wallet creation fails
       }
     } else {
+      userLogger.login(user.id.toString(), { address, proxyWallet: user.proxyWallet });
       console.log(`✅ User already has proxy wallet: ${user.proxyWallet}`);
     }
 
     // Generate JWT token
+    const expiresIn = config.jwt.expiresIn && config.jwt.expiresIn.trim() !== '' 
+      ? config.jwt.expiresIn 
+      : '7d';
+    // @ts-expect-error - expiresIn accepts string values like '7d' at runtime, but TypeScript types are overly strict
     const token = jwt.sign(
       {
         userId: updatedUser.id,
@@ -152,7 +240,7 @@ export async function verifyAndAuthenticate(
       },
       config.jwt.secret,
       {
-        expiresIn: config.jwt.expiresIn,
+        expiresIn,
       }
     );
 

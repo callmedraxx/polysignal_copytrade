@@ -1,20 +1,19 @@
 import { ethers } from "ethers";
-import { config } from "../config/env";
 import { prisma } from "../config/database";
 import { logger } from "../utils/logger";
 import { getUserByAddress } from "./auth";
 import { getTokenTransfers, getRateLimitStats } from "./explorer-api-client";
 
-// USDC contract addresses
-const POLYGON_USDC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"; // Native USDC on Polygon
+// USDC.e contract address (only token we track for deposits)
 const POLYGON_USDCe = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // USDC.e on Polygon
 
-// ERC20 ABI
-const ERC20_ABI = [
+// ERC20 ABI (kept for potential future use)
+const _ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
   "function decimals() view returns (uint8)",
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ];
+void _ERC20_ABI; // Mark as intentionally unused
 
 // Use rate-limited API client instead of direct API calls
 
@@ -28,16 +27,54 @@ export interface HistoricalDeposit {
   amountRaw: string;
   from: string;
   to: string;
-  isNativeUSDC: boolean;
-  isBridgedUSDCE: boolean;
+  isBridgedUSDCE: boolean; // Always true since we only track USDC.e
 }
 
 /**
- * Scan historical deposits to proxy wallet from blockchain
+ * Get the highest block number from existing deposits for a user
+ * Used for incremental scanning (only scan new blocks)
+ */
+async function getLastCheckedBlockNumber(userId: string): Promise<number> {
+  try {
+    // Find the highest block number from existing deposits
+    const deposits = await prisma.deposit.findMany({
+      where: { userId },
+      select: { metadata: true },
+    });
+    
+    let maxBlock = 0;
+    for (const deposit of deposits) {
+      if (deposit.metadata) {
+        try {
+          const metadata = JSON.parse(deposit.metadata);
+          if (metadata.blockNumber && typeof metadata.blockNumber === 'number') {
+            maxBlock = Math.max(maxBlock, metadata.blockNumber);
+          }
+        } catch {
+          // Ignore invalid JSON
+        }
+      }
+    }
+    
+    return maxBlock;
+  } catch (error) {
+    logger.error("Error getting last checked block number", {
+      userId,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    return 0; // Start from beginning if error
+  }
+}
+
+/**
+ * Scan deposits to proxy wallet from blockchain
+ * Only checks USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
+ * Uses incremental scanning from last checked block if available
  */
 export async function scanHistoricalDeposits(
   userAddress: string,
-  limit: number = 100
+  limit: number = 100,
+  startBlock?: number
 ): Promise<HistoricalDeposit[]> {
   try {
     const user = await getUserByAddress(userAddress);
@@ -48,71 +85,94 @@ export async function scanHistoricalDeposits(
     
     const proxyWallet = user.proxyWallet.toLowerCase();
     
-    const deposits: HistoricalDeposit[] = [];
+    // Get last checked block number if not provided
+    let fromBlock = startBlock;
+    if (fromBlock === undefined) {
+      const lastBlock = await getLastCheckedBlockNumber(user.id);
+      // If we have a last checked block, start from the next block to avoid duplicates
+      // If no deposits exist, start from block 0
+      fromBlock = lastBlock > 0 ? lastBlock + 1 : 0;
+    }
     
-    // Check both Native USDC and USDC.e using rate-limited API client
-    const usdcTokens = [
-      { address: POLYGON_USDC, name: "Native USDC", isNative: true },
-      { address: POLYGON_USDCe, name: "USDC.e (Bridged)", isNative: false },
-    ];
+    const deposits: HistoricalDeposit[] = [];
     
     // Log rate limit stats before scanning
     const statsBefore = getRateLimitStats();
-    logger.info("Starting historical deposit scan", {
+    logger.info("Starting deposit scan (USDC.e only)", {
       userAddress,
       proxyWallet,
+      fromBlock,
       rateLimitStats: statsBefore,
     });
     
-    for (const usdcToken of usdcTokens) {
-      try {
-        // Use rate-limited API client
-        const transfers = await getTokenTransfers(
-          proxyWallet,
-          "137", // Polygon chain ID
-          usdcToken.address,
-          0,
-          99999999
-        );
+    try {
+      // Use rate-limited API client to scan USDC.e transfers
+      // Normalize address to lowercase for consistent API calls
+      const transfers = await getTokenTransfers(
+        proxyWallet.toLowerCase(),
+        "137", // Polygon chain ID
+        POLYGON_USDCe.toLowerCase(),
+        fromBlock,
+        99999999 // Scan to current block
+      );
+      
+      logger.info("Token transfers API response", {
+        userAddress,
+        proxyWallet,
+        transfersCount: transfers.length,
+        fromBlock,
+      });
+      
+      // Filter for incoming transfers only (to proxy wallet)
+      // Also verify the contract address matches USDC.e
+      const incomingTransfers = transfers.filter((tx: any) => {
+        const txTo = tx.to ? tx.to.toLowerCase() : null;
+        const txContract = tx.contractAddress ? tx.contractAddress.toLowerCase() : null;
+        const matchesProxyWallet = txTo === proxyWallet.toLowerCase();
+        const matchesUSDCE = txContract === POLYGON_USDCe.toLowerCase();
         
-        // Filter for incoming transfers only (to proxy wallet)
-        const incomingTransfers = transfers.filter((tx: any) => 
-          tx.to && tx.to.toLowerCase() === proxyWallet
-        );
+        return matchesProxyWallet && matchesUSDCE;
+      });
+      
+      logger.info("Filtered incoming transfers", {
+        userAddress,
+        proxyWallet,
+        totalTransfers: transfers.length,
+        incomingTransfers: incomingTransfers.length,
+      });
+      
+      // Convert to HistoricalDeposit format
+      for (const tx of incomingTransfers) {
+        const decimals = parseInt(tx.tokenDecimal || "6");
+        const amount = ethers.utils.formatUnits(tx.value, decimals);
         
-        // Convert to HistoricalDeposit format
-        for (const tx of incomingTransfers) {
-          const decimals = parseInt(tx.tokenDecimal || "6");
-          const amount = ethers.utils.formatUnits(tx.value, decimals);
-          
-          deposits.push({
-            transactionHash: tx.hash,
-            blockNumber: parseInt(tx.blockNumber),
-            timestamp: new Date(parseInt(tx.timeStamp) * 1000),
-            token: usdcToken.name,
-            tokenAddress: tx.contractAddress.toLowerCase(),
-            amount,
-            amountRaw: tx.value,
-            from: tx.from,
-            to: tx.to,
-            isNativeUSDC: usdcToken.isNative,
-            isBridgedUSDCE: !usdcToken.isNative,
-          });
-        }
-      } catch (error) {
-        logger.error(`Error scanning deposits for token ${usdcToken.name}`, {
-          userAddress,
-          tokenAddress: usdcToken.address,
-          error: error instanceof Error ? error.message : "Unknown error",
+        deposits.push({
+          transactionHash: tx.hash,
+          blockNumber: parseInt(tx.blockNumber),
+          timestamp: new Date(parseInt(tx.timeStamp) * 1000),
+          token: "USDC.e",
+          tokenAddress: tx.contractAddress.toLowerCase(),
+          amount,
+          amountRaw: tx.value,
+          from: tx.from,
+          to: tx.to,
+          isBridgedUSDCE: true, // Always true since we only track USDC.e
         });
       }
+    } catch (error) {
+      logger.error("Error scanning USDC.e deposits", {
+        userAddress,
+        tokenAddress: POLYGON_USDCe,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
     
     // Log rate limit stats after scanning
     const statsAfter = getRateLimitStats();
-    logger.info("Historical deposit scan completed", {
+    logger.info("Deposit scan completed", {
       userAddress,
       depositsFound: deposits.length,
+      fromBlock,
       rateLimitStats: statsAfter,
       callsUsed: statsAfter.polygonscan.dailyCallCount - statsBefore.polygonscan.dailyCallCount,
     });
@@ -122,7 +182,7 @@ export async function scanHistoricalDeposits(
     
     return deposits.slice(0, limit);
   } catch (error) {
-    logger.error("Error scanning historical deposits", {
+    logger.error("Error scanning deposits", {
       userAddress,
       error: error instanceof Error ? error.message : "Unknown error",
     });
@@ -131,24 +191,28 @@ export async function scanHistoricalDeposits(
 }
 
 /**
- * Sync historical deposits to database
- * Creates deposit records for historical deposits that don't exist yet
+ * Sync deposits to database
+ * Always creates database records for any on-chain deposits found
+ * This ensures we have complete records for analysis and don't need to scan blockchain every time
  */
 export async function syncHistoricalDeposits(
   userAddress: string,
-  limit: number = 100
+  limit: number = 100,
+  startBlock?: number
 ): Promise<{
   synced: number;
   skipped: number;
   errors: number;
 }> {
   try {
-    const historicalDeposits = await scanHistoricalDeposits(userAddress, limit);
     const user = await getUserByAddress(userAddress);
     
     if (!user) {
       throw new Error(`User not found: ${userAddress}`);
     }
+    
+    // Scan for deposits (incremental from last checked block if not specified)
+    const historicalDeposits = await scanHistoricalDeposits(userAddress, limit, startBlock);
     
     let synced = 0;
     let skipped = 0;
@@ -170,14 +234,14 @@ export async function syncHistoricalDeposits(
           continue;
         }
         
-        // Create deposit record for historical deposit
+        // Always create deposit record for any on-chain deposit found
         await prisma.deposit.create({
           data: {
             userId: user.id,
-            sourceCurrency: deposit.isBridgedUSDCE ? "USDC.e (Bridged)" : "USDC",
+            sourceCurrency: "USDC.e", // Only USDC.e is tracked
             sourceAmount: deposit.amount,
             targetAmount: deposit.amount, // Same amount since it's already on Polygon
-            status: "completed", // Historical deposits are already completed
+            status: "completed", // On-chain deposits are already completed
             transactionHash: deposit.transactionHash.toLowerCase(),
             proxyWallet: deposit.to,
             metadata: JSON.stringify({
@@ -185,7 +249,7 @@ export async function syncHistoricalDeposits(
               sourceChain: "Polygon",
               sourceChainId: "137",
               tokenAddress: deposit.tokenAddress,
-              tokenSymbol: deposit.isNativeUSDC ? "USDC" : "USDC.e",
+              tokenSymbol: "USDC.e",
               amountRaw: deposit.amountRaw,
               from: deposit.from,
               blockNumber: deposit.blockNumber,
@@ -197,7 +261,7 @@ export async function syncHistoricalDeposits(
         
         synced++;
       } catch (error) {
-        logger.error("Error syncing historical deposit", {
+        logger.error("Error syncing deposit", {
           userAddress,
           txHash: deposit.transactionHash,
           error: error instanceof Error ? error.message : "Unknown error",
@@ -206,7 +270,7 @@ export async function syncHistoricalDeposits(
       }
     }
     
-    logger.info("Historical deposits sync completed", {
+    logger.info("Deposits sync completed", {
       userAddress,
       synced,
       skipped,
@@ -216,7 +280,7 @@ export async function syncHistoricalDeposits(
     
     return { synced, skipped, errors };
   } catch (error) {
-    logger.error("Error syncing historical deposits", {
+    logger.error("Error syncing deposits", {
       userAddress,
       error: error instanceof Error ? error.message : "Unknown error",
     });
@@ -225,10 +289,13 @@ export async function syncHistoricalDeposits(
 }
 
 /**
- * Get comprehensive deposit history including historical deposits
+ * Get comprehensive deposit history
+ * Always syncs new deposits from blockchain to database for record keeping
+ * Returns deposits from database (which includes all synced on-chain deposits)
  */
 export async function getCompleteDepositHistory(
-  userAddress: string
+  userAddress: string,
+  autoSync: boolean = true
 ): Promise<{
   deposits: Array<{
     depositId?: string;
@@ -241,7 +308,6 @@ export async function getCompleteDepositHistory(
     timestamp: Date;
     blockNumber: number;
     isHistorical?: boolean;
-    isNativeUSDC?: boolean;
     isBridgedUSDCE?: boolean;
   }>;
   stats: {
@@ -252,29 +318,59 @@ export async function getCompleteDepositHistory(
   };
 }> {
   try {
-    // Get deposits from database
     const user = await getUserByAddress(userAddress);
-    const dbDeposits = user
-      ? await prisma.deposit.findMany({
+    
+    if (!user) {
+      return {
+        deposits: [],
+        stats: {
+          total: 0,
+          completed: 0,
+          pending: 0,
+          totalAmount: "0.000000",
+        },
+      };
+    }
+    
+    // Always sync new deposits from blockchain to database
+    // This ensures we have complete records and only need to scan new blocks next time
+    if (autoSync) {
+      try {
+        // Force a full scan from block 0 if no deposits exist in database
+        // This ensures we catch all historical deposits on first sync
+        const existingDeposits = await prisma.deposit.findMany({
           where: { userId: user.id },
-          orderBy: { createdAt: "desc" },
-        })
-      : [];
+          take: 1,
+        });
+        
+        const startBlock = existingDeposits.length === 0 ? 0 : undefined;
+        logger.info("Auto-syncing deposits", {
+          userAddress,
+          startBlock: startBlock !== undefined ? startBlock : "incremental",
+          existingDepositsCount: existingDeposits.length,
+        });
+        
+        await syncHistoricalDeposits(userAddress, 100, startBlock);
+      } catch (error) {
+        logger.error("Error auto-syncing deposits", {
+          userAddress,
+          error: error instanceof Error ? error.message : "Unknown error",
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        // Continue even if sync fails - we'll still return database deposits
+      }
+    }
     
-    // Get historical deposits from blockchain
-    const historicalDeposits = await scanHistoricalDeposits(userAddress, 100);
+    // Get all deposits from database (includes all synced on-chain deposits)
+    const dbDeposits = await prisma.deposit.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+    });
     
-    // Combine and deduplicate
-    const txHashes = new Set<string>();
+    // Format deposits for response
     const allDeposits: any[] = [];
     
-    // Add database deposits first
     for (const deposit of dbDeposits) {
-      const txHash = deposit.transactionHash?.toLowerCase();
-      if (txHash) {
-        txHashes.add(txHash);
-      }
-      
       const metadata = deposit.metadata ? JSON.parse(deposit.metadata) : {};
       
       allDeposits.push({
@@ -288,28 +384,8 @@ export async function getCompleteDepositHistory(
         timestamp: deposit.createdAt,
         blockNumber: metadata.blockNumber || 0,
         isHistorical: metadata.isHistorical || false,
-        isNativeUSDC: metadata.tokenSymbol === "USDC" && metadata.tokenAddress?.toLowerCase() === POLYGON_USDC.toLowerCase(),
         isBridgedUSDCE: deposit.sourceCurrency.includes("USDC.e") || metadata.tokenSymbol === "USDC.e",
       });
-    }
-    
-    // Add historical deposits that aren't in database
-    for (const deposit of historicalDeposits) {
-      if (!txHashes.has(deposit.transactionHash.toLowerCase())) {
-        allDeposits.push({
-          transactionHash: deposit.transactionHash,
-          status: "completed",
-          sourceChain: "Polygon",
-          tokenSymbol: deposit.isNativeUSDC ? "USDC" : "USDC.e",
-          amount: deposit.amount,
-          targetAmount: deposit.amount,
-          timestamp: deposit.timestamp,
-          blockNumber: deposit.blockNumber,
-          isHistorical: true,
-          isNativeUSDC: deposit.isNativeUSDC,
-          isBridgedUSDCE: deposit.isBridgedUSDCE,
-        });
-      }
     }
     
     // Sort by timestamp (newest first)

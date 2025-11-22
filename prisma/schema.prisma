@@ -47,6 +47,9 @@ model CopyTradingConfig {
   // Trader to copy
   targetTraderAddress String // Polymarket trader wallet address
 
+  // Configuration name
+  configName String? // User-defined name for this configuration/campaign
+
   // Trade type filters
   copyBuyTrades  Boolean @default(true) // Copy buy trades
   copySellTrades Boolean @default(true) // Copy sell trades
@@ -68,6 +71,16 @@ model CopyTradingConfig {
   // Status
   enabled    Boolean @default(false) // Must be explicitly enabled after configuration
   authorized Boolean @default(false) // User has authorized automated trading
+  status     String  @default("active") // "active", "paused", "disabled" - allows pause/resume without full disable
+
+  // Trade limits
+  maxBuyTradesPerDay Int? // Maximum number of buy trades per day (null = unlimited)
+  tradesCountToday   Int  @default(0) // Current count of buy trades today
+  lastResetDate      DateTime? // Last date when tradesCountToday was reset (for 24-hour tracking)
+
+  // Duration limits
+  durationDays Int? // Number of days to copy trade for (null = unlimited)
+  startDate    DateTime? // When copy trading started (for duration tracking)
 
   // Execution settings
   slippageTolerance String @default("0.05") // Slippage tolerance as decimal (0.05 = 5%)
@@ -89,8 +102,9 @@ model CopyTradingConfig {
 
 model CopiedTrade {
   id       String            @id @default(uuid())
-  configId String
-  config   CopyTradingConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  // userId removed - query through config relationship instead
+  configId String? // Nullable - set to null when config is deleted
+  config   CopyTradingConfig? @relation(fields: [configId], references: [id], onDelete: SetNull)
 
   // Original trade details
   originalTrader String // Address of trader being copied
@@ -141,6 +155,7 @@ model CopiedTrade {
   executedAt DateTime?
   createdAt  DateTime  @default(now())
 
+  // userId index removed - query through config relationship instead
   @@index([configId])
   @@index([originalTxHash])
   @@index([status])

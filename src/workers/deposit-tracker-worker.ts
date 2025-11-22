@@ -1,7 +1,6 @@
 import { logger } from "../utils/logger";
 import { prisma } from "../config/database";
-import { trackDeposit, updateDepositStatus } from "../services/deposit-tracker";
-import { config } from "../config/env";
+import { trackDeposit } from "../services/deposit-tracker";
 import { broadcastDepositUpdate } from "../routes/deposit-sse";
 
 const TRACKING_INTERVAL = parseInt(process.env.DEPOSIT_TRACKING_INTERVAL || "60000", 10); // Default: 60 seconds

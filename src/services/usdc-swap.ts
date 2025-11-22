@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { config } from '../config/env';
-import { getSafeInstance, executeSafeTransaction } from './wallet';
+import { executeSafeTransaction } from './wallet';
 import { prisma } from '../config/database';
 
 // USDC contract addresses
@@ -123,7 +123,6 @@ export async function swapUSDCEToNative(
       // Need to approve first
       console.log(`Approving USDC.e for swap...`);
       
-      const approveABI = ['function approve(address spender, uint256 amount) returns (bool)'];
       const approveData = bridgedUSDCContract.interface.encodeFunctionData('approve', [
         UNISWAP_V3_SWAP_ROUTER,
         ethers.constants.MaxUint256, // Approve max for future swaps
@@ -152,7 +151,7 @@ export async function swapUSDCEToNative(
 
     // Calculate minimum amount out (with 0.5% slippage tolerance)
     // Note: In production, you might want to fetch current price from Uniswap
-    const slippageTolerance = 0.005; // 0.5%
+    // const slippageTolerance = 0.005; // 0.5%
     const amountOutMinimum = amountToSwap.mul(995).div(1000); // Rough estimate, should use Uniswap quote
 
     // Uniswap V3 fee tier for USDC/USDC.e pool (usually 0.01% = 100)

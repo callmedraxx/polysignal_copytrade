@@ -1,22 +1,22 @@
 import { ethers } from "ethers";
-import { config } from "../config/env";
 import { prisma } from "../config/database";
 import { logger } from "../utils/logger";
 import { getUserByAddress } from "./auth";
 import { createDepositAddresses } from "./bridge-deposit";
 import { getTokenTransfers } from "./explorer-api-client";
+import { getUserLogger } from "../utils/user-logger";
 
 // USDC contract addresses
 const POLYGON_USDC = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"; // Native USDC on Polygon
 const POLYGON_USDCe = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"; // USDC.e on Polygon
-const ETHEREUM_USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"; // USDC on Ethereum
+// const ETHEREUM_USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"; // USDC on Ethereum (unused)
 
-// ERC20 ABI
-const ERC20_ABI = [
-  "function balanceOf(address owner) view returns (uint256)",
-  "function decimals() view returns (uint8)",
-  "event Transfer(address indexed from, address indexed to, uint256 value)",
-];
+// ERC20 ABI (unused - kept for future use)
+// const ERC20_ABI = [
+//   "function balanceOf(address owner) view returns (uint256)",
+//   "function decimals() view returns (uint8)",
+//   "event Transfer(address indexed from, address indexed to, uint256 value)",
+// ];
 
 export interface DepositTrackingInfo {
   depositId: string;
@@ -73,11 +73,11 @@ export async function createDepositRecord(
       if (sourceChainId === "1" || sourceChain.toLowerCase() === "ethereum") {
         depositAddress = typeof depositData.address === "string" 
           ? depositData.address 
-          : depositData.address?.evm || null;
+          : depositData.address?.evm || undefined;
       } else if (sourceChainId === "1151111081099710" || sourceChain.toLowerCase() === "solana") {
         depositAddress = typeof depositData.address === "object" 
-          ? depositData.address?.svm || null
-          : null;
+          ? depositData.address?.svm || undefined
+          : undefined;
       }
       
       if (!depositAddress) {
@@ -136,7 +136,7 @@ export async function createDepositRecord(
  * Uses rate-limited API client to respect API limits
  */
 export async function checkSourceChainDeposit(
-  depositId: string,
+  _depositId: string,
   depositAddress: string,
   sourceChainId: string,
   tokenAddress: string
@@ -213,7 +213,7 @@ export async function checkSourceChainDeposit(
  * Uses rate-limited API client to respect API limits
  */
 export async function checkDestinationDeposit(
-  depositId: string,
+  _depositId: string,
   proxyWallet: string,
   expectedAmount?: string
 ): Promise<{
@@ -303,11 +303,14 @@ export async function updateDepositStatus(
   try {
     const deposit = await prisma.deposit.findUnique({
       where: { id: depositId },
+      include: { user: true },
     });
     
     if (!deposit) {
       throw new Error(`Deposit not found: ${depositId}`);
     }
+
+    const userLogger = getUserLogger(deposit.user.address);
     
     // Parse existing metadata
     const metadata = deposit.metadata ? JSON.parse(deposit.metadata) : {};
@@ -335,6 +338,25 @@ export async function updateDepositStatus(
         metadata: JSON.stringify(metadata),
       },
     });
+    
+    // Log deposit status update
+    if (status === 'completed' && updates?.destinationTxHash) {
+      userLogger.depositCompleted(depositId, updates.destinationTxHash, updates.targetAmount || deposit.targetAmount || deposit.sourceAmount, {
+        sourceCurrency: deposit.sourceCurrency,
+        sourceAmount: deposit.sourceAmount,
+      });
+    } else if (status === 'failed' && updates?.errorMessage) {
+      userLogger.depositError(depositId, new Error(updates.errorMessage), {
+        sourceCurrency: deposit.sourceCurrency,
+        sourceAmount: deposit.sourceAmount,
+      });
+    } else {
+      userLogger.info('DEPOSIT', `Deposit status updated to ${status}`, {
+        depositId,
+        status,
+        updates,
+      });
+    }
     
     logger.info("Updated deposit status", {
       depositId,

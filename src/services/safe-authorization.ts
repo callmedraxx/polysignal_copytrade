@@ -1,6 +1,5 @@
 import { ethers } from 'ethers';
 import { config } from '../config/env';
-import { getSafeInstance } from './wallet';
 
 export interface AuthorizationTransaction {
   to: string;
@@ -95,8 +94,8 @@ export async function submitAuthorizationTransaction(
       throw new Error(`Safe Transaction Service error: ${JSON.stringify(error)}`);
     }
 
-    const result = await response.json();
-    return result.safeTxHash || result.txHash;
+    const result = await response.json() as { safeTxHash?: string; txHash?: string };
+    return result.safeTxHash || result.txHash || '';
   } catch (error) {
     console.error('Error submitting authorization transaction:', error);
     throw error;
@@ -136,12 +135,17 @@ export async function getTransactionStatus(
       );
     }
 
-    const data = await response.json();
+    const data = await response.json() as { 
+      txHash?: string; 
+      isExecuted?: boolean; 
+      isSuccessful?: boolean; 
+      confirmations?: any[] 
+    };
     
     return {
-      txHash: data.txHash,
+      txHash: data.txHash || '',
       isExecuted: data.isExecuted || false,
-      isSuccessful: data.isSuccessful,
+      isSuccessful: data.isSuccessful || false,
       confirmations: data.confirmations?.length || 0,
     };
   } catch (error: any) {
@@ -237,7 +241,7 @@ export async function executeSignedSafeTransaction(
       // Add signatures to the transaction
       // Protocol Kit v6 uses addSignature method
       if (protocolKit.addSignature) {
-        for (const [signer, signature] of Object.entries(signatures)) {
+        for (const [_signer, signature] of Object.entries(signatures)) {
           await protocolKit.addSignature(safeTransaction, signature as string);
         }
       } else {

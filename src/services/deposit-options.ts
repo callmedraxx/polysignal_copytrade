@@ -1,6 +1,6 @@
 import { getUserByAddress } from "./auth";
 import { createDepositAddresses } from "./bridge-deposit";
-import { getSupportedAssets, getSupportedAssetsByChain } from "./bridge-assets";
+import { getSupportedAssets } from "./bridge-assets";
 import { logger } from "../utils/logger";
 
 export interface DepositOption {
@@ -59,6 +59,7 @@ export interface UnifiedDepositResponse {
   recommendations: {
     forPolygonUsers: string;
     forEthereumUsers: string;
+    forSolanaUsers?: string;
     forOtherChainUsers: string;
   };
   importantNotes: string[];
@@ -104,8 +105,8 @@ export async function getUnifiedDepositOptions(
       ? bridgeDepositData.address
       : bridgeDepositData?.address?.evm || null;
     
-    const solanaDepositAddress = bridgeDepositData?.address?.svm || null;
-    const bitcoinDepositAddress = bridgeDepositData?.address?.btc || null;
+    const solanaDepositAddress = typeof bridgeDepositData?.address === 'object' && bridgeDepositData?.address ? bridgeDepositData.address.svm || null : null;
+    // const bitcoinDepositAddress = typeof bridgeDepositData?.address === 'object' && bridgeDepositData?.address ? bridgeDepositData.address.btc || null : null;
     
     // Build deposit options
     const options: DepositOption[] = [];
@@ -115,7 +116,7 @@ export async function getUnifiedDepositOptions(
       type: "direct",
       id: "direct-polygon",
       name: "Direct Deposit (Polygon)",
-      description: "Send Native USDC directly to your proxy wallet on Polygon. Fastest and simplest method.",
+      description: "Send USDC.e directly to your proxy wallet on Polygon. Fastest and simplest method.",
       recommended: true,
       network: {
         name: "Polygon",
@@ -125,34 +126,34 @@ export async function getUnifiedDepositOptions(
       depositAddress: proxyWallet,
       token: {
         symbol: "USDC",
-        name: "Native USDC",
-        address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+        name: "USDC.e",
+        address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", // USDC.e (bridged)
         decimals: 6,
       },
       speed: "Instant (no bridge needed)",
       fees: "Polygon gas fees only (~$0.01)",
       instructions: [
         "Connect your wallet to Polygon Mainnet",
-        `Send Native USDC to: ${proxyWallet}`,
-        "Use token address: 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+        `Send USDC.e to: ${proxyWallet}`,
+        "Use token address: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
         "Funds will appear immediately (no bridge wait time)",
         "Minimum deposit: $2 USD",
       ],
       warnings: [
         "⚠️ Make sure you're on Polygon network, NOT Ethereum!",
-        "⚠️ Send Native USDC (not USDC.e bridged)",
+        "⚠️ Send USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)",
         "⚠️ Do NOT send to bridge deposit address - send directly here!",
       ],
       example: {
         network: "Polygon Mainnet",
-        token: "Native USDC (0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359)",
+        token: "USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)",
         amount: "100 USDC",
         from: "Your wallet on Polygon",
         to: proxyWallet,
       },
       commonMistakes: [
         "❌ Sending from Ethereum to this address (wrong network!)",
-        "❌ Sending USDC.e instead of Native USDC",
+        "❌ Sending Native USDC instead of USDC.e",
         "❌ Sending to bridge deposit address instead of proxy wallet",
       ],
       explorerUrl: `https://polygonscan.com/address/${proxyWallet}`,
@@ -216,7 +217,7 @@ export async function getUnifiedDepositOptions(
         type: "bridge",
         id: "bridge-solana",
         name: "Bridge Deposit (Solana)",
-        description: "Send USDC from Solana. Polymarket Bridge will automatically bridge to Polygon.",
+        description: "Send SOL or USDC from Solana. Polymarket Bridge will automatically bridge to Polygon. You can send either SOL (native Solana) or USDC on Solana.",
         recommended: false,
         network: {
           name: "Solana",
@@ -225,40 +226,50 @@ export async function getUnifiedDepositOptions(
         },
         depositAddress: solanaDepositAddress,
         token: {
-          symbol: "USDC",
-          name: "USD Coin",
-          address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-          decimals: 6,
+          symbol: "SOL or USDC",
+          name: "SOL (native) or USDC on Solana",
+          address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC mint address on Solana
+          decimals: 9, // SOL has 9 decimals, USDC has 6, but we'll use 9 for SOL
         },
         speed: "5-15 minutes (bridge processing time)",
         fees: "Solana transaction fees + bridge fees",
         instructions: [
           "Connect your wallet to Solana Mainnet",
-          `Send USDC to: ${solanaDepositAddress}`,
-          "Use USDC mint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          `Send SOL or USDC to Solana address: ${solanaDepositAddress}`,
+          "You can send either:",
+          "  • SOL (native Solana token) - will be converted to USDC",
+          "  • USDC on Solana (mint: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)",
           "Wait 5-15 minutes for Polymarket Bridge to process",
           "Funds will arrive in your proxy wallet as USDC.e on Polygon",
           "Minimum deposit: $10 USD",
         ],
         warnings: [
-          "⚠️ Make sure you're on Solana Mainnet",
+          "⚠️ CRITICAL: You must be on Solana Mainnet to use this address!",
+          "⚠️ This is a Solana (SVM) address, NOT an Ethereum address",
           "⚠️ After sending, wait 5-15 minutes for bridge to complete",
+          "⚠️ You can send SOL or USDC on Solana - both are supported",
         ],
         example: {
           network: "Solana Mainnet",
-          token: "USDC (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)",
-          amount: "100 USDC",
+          token: "SOL or USDC on Solana",
+          amount: "100 USDC or 1 SOL",
           from: "Your wallet on Solana",
           to: solanaDepositAddress,
         },
+        commonMistakes: [
+          "❌ Sending from Ethereum or Polygon to this Solana address (wrong network!)",
+          "❌ Using this address on a non-Solana network",
+          "❌ Confusing this with Ethereum deposit address",
+        ],
         explorerUrl: `https://solscan.io/account/${solanaDepositAddress}`,
       });
     }
     
     // Build recommendations
     const recommendations = {
-      forPolygonUsers: `If you're already on Polygon, use Direct Deposit (recommended). Send Native USDC directly to ${proxyWallet} on Polygon. No bridge needed - funds appear instantly!`,
+      forPolygonUsers: `If you're already on Polygon, use Direct Deposit (recommended). Send USDC.e directly to ${proxyWallet} on Polygon. No bridge needed - funds appear instantly!`,
       forEthereumUsers: `If you're on Ethereum, use Bridge Deposit (Ethereum). Send USDC to ${evmDepositAddress} on Ethereum Mainnet. The bridge takes 5-15 minutes.`,
+      forSolanaUsers: solanaDepositAddress ? `If you're on Solana, use Bridge Deposit (Solana). Send SOL or USDC to ${solanaDepositAddress} on Solana Mainnet. The bridge takes 5-15 minutes.` : undefined,
       forOtherChainUsers: `For other chains, check supported assets below and use the appropriate bridge deposit address. All deposits are automatically bridged to Polygon.`,
     };
     
@@ -268,20 +279,21 @@ export async function getUnifiedDepositOptions(
       "📍 This is where ALL deposits ultimately arrive, regardless of source chain",
       "",
       "🔍 UNDERSTANDING DEPOSIT ADDRESSES:",
-      `   - Direct Deposit: ${proxyWallet} (Polygon) - Send directly here if you're on Polygon`,
+      `   - Direct Deposit: ${proxyWallet} (Polygon) - Send USDC.e directly here if you're on Polygon`,
       evmDepositAddress ? `   - Bridge Deposit (Ethereum): ${evmDepositAddress} (Ethereum) - Send here ONLY if you're on Ethereum` : "",
+      solanaDepositAddress ? `   - Bridge Deposit (Solana): ${solanaDepositAddress} (Solana) - Send SOL or USDC here if you're on Solana` : "",
       "",
       "⚠️ CRITICAL: Each deposit address is on a SPECIFIC network!",
       "   - Direct deposit address = Polygon network (Chain ID: 137)",
-      "   - Bridge deposit addresses = Source chain network (Ethereum = Chain ID: 1, etc.)",
+      "   - Bridge deposit addresses = Source chain network (Ethereum = Chain ID: 1, Solana = SVM, etc.)",
       "",
       "❌ COMMON MISTAKE: Sending from Polygon to Ethereum deposit address",
       "   → This won't work! You must send FROM the same network as the deposit address",
       "",
       "✅ CORRECT USAGE:",
-      "   - On Polygon? → Use Direct Deposit (send to proxy wallet)",
-      "   - On Ethereum? → Use Bridge Deposit Ethereum (send to bridge address)",
-      "   - On Solana? → Use Bridge Deposit Solana (send to bridge address)",
+      "   - On Polygon? → Use Direct Deposit (send USDC.e to proxy wallet)",
+      "   - On Ethereum? → Use Bridge Deposit Ethereum (send USDC to bridge address)",
+      "   - On Solana? → Use Bridge Deposit Solana (send SOL or USDC to Solana bridge address)",
     ].filter(Boolean);
     
     const helpText = `
@@ -290,21 +302,22 @@ HOW TO CHOOSE THE RIGHT DEPOSIT METHOD:
 1. CHECK YOUR CURRENT NETWORK
    - Are you on Polygon? → Use Direct Deposit ✅
    - Are you on Ethereum? → Use Bridge Deposit (Ethereum)
-   - Are you on Solana? → Use Bridge Deposit (Solana)
+   - Are you on Solana? → Use Bridge Deposit (Solana) - Send SOL or USDC on Solana
 
 2. DIRECT DEPOSIT (Recommended for Polygon users)
    - Network: Polygon Mainnet (Chain ID: 137)
    - Send to: Your proxy wallet (${proxyWallet})
-   - Token: Native USDC (0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359)
+   - Token: USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
    - Speed: Instant ⚡
    - ✅ Best choice if you're already on Polygon!
 
 3. BRIDGE DEPOSIT (For cross-chain users)
    - Network: Source chain (Ethereum, Solana, etc.)
    - Send to: Bridge deposit address (specific to each chain)
-   - Token: Native token on source chain
+   - Token: Native token on source chain (USDC on Ethereum, SOL or USDC on Solana)
    - Speed: 5-15 minutes (bridge processing)
    - ✅ Use this if you're on a different chain
+   - ✅ For Solana: You can send SOL (native) or USDC on Solana - both work!
 
 4. NETWORK MATTERS!
    - Each deposit address is on a specific network
@@ -315,10 +328,12 @@ HOW TO CHOOSE THE RIGHT DEPOSIT METHOD:
    - Direct deposits: Funds appear immediately
    - Bridge deposits: Wait 5-15 minutes, then check your proxy wallet
    - All funds arrive in: ${proxyWallet} (on Polygon)
+   - Balance is checked using USDC.e (0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174)
 
 STILL CONFUSED?
-- If you're on Polygon: Use Direct Deposit (recommended)
-- If you're on Ethereum: Use Bridge Deposit (Ethereum)
+- If you're on Polygon: Use Direct Deposit (send USDC.e to proxy wallet - recommended)
+- If you're on Ethereum: Use Bridge Deposit (Ethereum) - send USDC
+- If you're on Solana: Use Bridge Deposit (Solana) - send SOL or USDC on Solana
 - When in doubt: Check which network your wallet is connected to!
     `.trim();
     

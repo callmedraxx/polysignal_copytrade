@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import {
   getConfigStatistics,
@@ -14,7 +14,7 @@ import {
 } from '../services/trade-lifecycle-analytics';
 import { prisma } from '../config/database';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * @swagger

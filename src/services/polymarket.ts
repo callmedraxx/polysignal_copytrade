@@ -67,7 +67,7 @@ export async function verifyTrader(address: string): Promise<TraderInfo> {
       });
       
       if (positionsResponse.ok) {
-        positions = await positionsResponse.json();
+        positions = await positionsResponse.json() as any[];
       }
     } catch (error) {
       // Positions endpoint might fail, but that's okay - we can still use activity data
@@ -91,7 +91,6 @@ export async function verifyTrader(address: string): Promise<TraderInfo> {
     // Calculate trader statistics
     let totalVolume = ethers.BigNumber.from(0);
     const marketIds = new Set<string>();
-    const marketCategories = new Set<string>();
     let buyTrades = 0;
     let sellTrades = 0;
 

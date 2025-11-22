@@ -108,7 +108,7 @@ export async function getTradeHistoryForConfig(
 }
 
 /**
- * Get trade history for a user (all configs)
+ * Get trade history for a user (all configs, including deleted ones)
  */
 export async function getTradeHistoryForUser(
   userId: string,
@@ -122,6 +122,7 @@ export async function getTradeHistoryForUser(
 ) {
   const { limit = 50, offset = 0, status, tradeType, configId } = options || {};
 
+  // Query through config relationship since userId column doesn't exist on CopiedTrade
   const where: any = {
     config: {
       userId,
@@ -130,7 +131,10 @@ export async function getTradeHistoryForUser(
   
   if (status) where.status = status;
   if (tradeType) where.tradeType = tradeType;
-  if (configId) where.configId = configId;
+  if (configId) {
+    // Filter by specific configId (works for both active and deleted configs)
+    where.configId = configId;
+  }
 
   const [trades, total] = await Promise.all([
     prisma.copiedTrade.findMany({
@@ -188,8 +192,13 @@ export async function getTradeStatsForConfig(configId: string) {
     return sum + parseFloat(t.unrealizedPnl || '0');
   }, 0);
 
-  // Calculate total invested (cost basis of all buy trades)
-  const buyTrades = trades.filter(t => t.tradeType === 'buy' && t.costBasis);
+  // Calculate total invested (cost basis of successful buy trades only)
+  // Only count trades with successful order submission (settled or executed, not failed)
+  const buyTrades = trades.filter(t => 
+    t.tradeType === 'buy' && 
+    t.costBasis && 
+    (t.status === 'settled' || t.status === 'executed')
+  );
   const totalInvested = buyTrades.reduce((sum, t) => {
     return sum + parseFloat(t.costBasis || t.copiedAmount || '0');
   }, 0);
@@ -260,7 +269,12 @@ export async function getTradeStatsForUser(userId: string) {
     );
     totalUnrealizedPnl += openTrades.reduce((sum, t) => sum + parseFloat(t.unrealizedPnl || '0'), 0);
 
-    const buyTrades = trades.filter(t => t.tradeType === 'buy' && t.costBasis);
+    // Only count successful buy trades (settled or executed, not failed)
+    const buyTrades = trades.filter(t => 
+      t.tradeType === 'buy' && 
+      t.costBasis && 
+      (t.status === 'settled' || t.status === 'executed')
+    );
     totalInvested += buyTrades.reduce((sum, t) => sum + parseFloat(t.costBasis || t.copiedAmount || '0'), 0);
 
     const sellTrades = trades.filter(t => t.tradeType === 'sell' && t.copiedAmount);
