@@ -529,7 +529,6 @@ async function createProxyWalletViaRelayer(ownerAddress: string): Promise<string
         const isOwner = owners.some((owner: string) => owner.toLowerCase() === derivedWalletAddress);
         
         if (isOwner) {
-          console.log(`✅ Verified: Derived wallet ${derivedWalletAddress} is an owner of the Safe`);
         } else {
           console.warn(`⚠️  WARNING: Derived wallet ${derivedWalletAddress} is NOT an owner of Safe ${actualSafeAddress}`);
           console.warn(`   Safe owners: ${owners.map((o: string) => o.toLowerCase()).join(', ')}`);

@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -12,150 +9,113 @@ datasource db {
 
 model User {
   id                 String              @id @default(uuid())
-  address            String              @unique // Ethereum wallet address
-  username           String?             @unique // Unique username (optional, can be set after signup)
-  nonce              String? // Current nonce for SIWE
-  proxyWallet        String? // Gnosis Safe proxy wallet address on Polygon
-  deposits           Deposit[]
-  copyTradingConfigs CopyTradingConfig[]
-  copySignalConfigs  CopySignalConfig[]
+  address            String              @unique
+  username           String?             @unique
+  nonce              String?
+  proxyWallet        String?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
+  copySignalConfigs  CopySignalConfig[]
+  copyTradingConfigs CopyTradingConfig[]
+  deposits           Deposit[]
 }
 
 model Deposit {
   id              String   @id @default(uuid())
   userId          String
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  onramperOrderId String?  @unique // Onramper order ID
-  sourceCurrency  String // Source cryptocurrency (e.g., "ETH", "BTC")
-  sourceAmount    String // Amount in source currency (as string to preserve precision)
-  targetAmount    String? // Final USDC amount received (as string)
-  status          String   @default("pending") // pending, processing, completed, failed
-  transactionHash String? // Polygon transaction hash for USDC transfer
-  proxyWallet     String // User's proxy wallet address
-  metadata        String?  @db.Text // JSON metadata (onramper response, etc.)
+  onramperOrderId String?  @unique
+  sourceCurrency  String
+  sourceAmount    String
+  targetAmount    String?
+  status          String   @default("pending")
+  transactionHash String?
+  proxyWallet     String
+  metadata        String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model CopyTradingConfig {
-  id     String @id @default(uuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String         @id @default(uuid())
+  userId              String
+  targetTraderAddress String
+  copyBuyTrades       Boolean        @default(true)
+  copySellTrades      Boolean        @default(true)
+  amountType          String         @default("fixed")
+  buyAmount           String
+  sellAmount          String
+  minBuyAmount        String?
+  maxBuyAmount        String?
+  minSellAmount       String?
+  maxSellAmount       String?
+  marketCategories    String?
+  enabled             Boolean        @default(false)
+  authorized          Boolean        @default(false)
+  status              String         @default("active")
+  maxBuyTradesPerDay  Int?
+  tradesCountToday    Int            @default(0)
+  lastResetDate       DateTime?
+  durationDays        Int?
+  startDate           DateTime?
+  slippageTolerance   String         @default("0.05")
+  maxRetries          Int            @default(3)
+  traderInfo          String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  configName          String?
+  allocatedUSDCAmount String
+  usedUSDCAmount      String?        @default("0")
+  copiedTrades        CopiedTrade[]
+  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fetchedTrades       FetchedTrade[]
 
-  // Trader to copy
-  targetTraderAddress String // Polymarket trader wallet address
-
-  // Configuration name
-  configName String? // User-defined name for this configuration/campaign
-
-  // Trade type filters
-  copyBuyTrades  Boolean @default(true) // Copy buy trades
-  copySellTrades Boolean @default(true) // Copy sell trades
-
-  // Amount configuration
-  amountType String @default("fixed") // "fixed" or "percentage"
-  buyAmount  String // Amount per buy trade (USDC if fixed, percentage if percentage)
-  sellAmount String // Amount per sell trade (USDC if fixed, percentage if percentage)
-
-  // Trade amount range filters
-  minBuyAmount  String? // Minimum USDC amount of original buy trade to copy
-  maxBuyAmount  String? // Maximum USDC amount of original buy trade to copy
-  minSellAmount String? // Minimum USDC amount of original sell trade to copy
-  maxSellAmount String? // Maximum USDC amount of original sell trade to copy
-
-  // Market category filter
-  marketCategories String? @db.Text // JSON array of market categories to copy, null = all categories
-
-  // Status
-  enabled    Boolean @default(false) // Must be explicitly enabled after configuration
-  authorized Boolean @default(false) // User has authorized automated trading
-  status     String  @default("active") // "active", "paused", "disabled" - allows pause/resume without full disable
-
-  // Trade limits
-  maxBuyTradesPerDay Int? // Maximum number of buy trades per day (null = unlimited)
-  tradesCountToday   Int  @default(0) // Current count of buy trades today
-  lastResetDate      DateTime? // Last date when tradesCountToday was reset (for 24-hour tracking)
-
-  // Duration limits
-  durationDays Int? // Number of days to copy trade for (null = unlimited)
-  startDate    DateTime? // When copy trading started (for duration tracking)
-
-  // Execution settings
-  slippageTolerance String @default("0.05") // Slippage tolerance as decimal (0.05 = 5%)
-  maxRetries        Int    @default(3) // Maximum retry attempts for failed trades
-
-  // Metadata
-  traderInfo String?  @db.Text // JSON metadata about the trader (from verification)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  // Relations
-  copiedTrades  CopiedTrade[]
-  fetchedTrades FetchedTrade[]
-
-  @@unique([userId, targetTraderAddress]) // Each user can have only one config per trader
+  @@unique([userId, targetTraderAddress])
   @@index([userId])
   @@index([targetTraderAddress])
 }
 
 model CopiedTrade {
-  id       String            @id @default(uuid())
-  // userId removed - query through config relationship instead
-  configId String? // Nullable - set to null when config is deleted
-  config   CopyTradingConfig? @relation(fields: [configId], references: [id], onDelete: SetNull)
+  id               String            @id @default(uuid())
+  configId         String
+  originalTrader   String
+  originalTxHash   String
+  marketId         String
+  marketQuestion   String?
+  outcomeIndex     Int
+  tradeType        String
+  originalAmount   String
+  originalPrice    String?
+  originalShares   String?
+  orderId          String?           @unique
+  orderStatus      String?
+  copiedTxHash     String?
+  copiedAmount     String
+  copiedPrice      String?
+  copiedShares     String?
+  status           String            @default("pending")
+  errorMessage     String?
+  submittedAt      DateTime?
+  settledAt        DateTime?
+  outcome          String?
+  pnl              String?
+  resolvedAt       DateTime?
+  resolutionPrice  String?
+  currentPrice     String?
+  currentValue     String?
+  unrealizedPnl    String?
+  costBasis        String?
+  lastPriceUpdate  DateTime?
+  failureReason    String?
+  failureCategory  String?
+  redemptionStatus String?
+  redemptionTxHash String?
+  redeemedAt       DateTime?
+  redemptionError  String?
+  executedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  config           CopyTradingConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
 
-  // Original trade details
-  originalTrader String // Address of trader being copied
-  originalTxHash String // Transaction hash of original trade
-  marketId       String // Polymarket market ID
-  marketQuestion String? // Market question/title
-  outcomeIndex   Int // Which outcome (0 = NO, 1 = YES)
-  tradeType      String // "buy" or "sell"
-  originalAmount String // Original trade amount in USDC
-  originalPrice  String? // Price at which original trade was executed
-  originalShares String? // Number of shares in original trade
-
-  // Copied trade details (CLOB order tracking)
-  orderId      String?   @unique // CLOB order ID
-  orderStatus  String? // PENDING, OPEN, FILLED, SETTLED, CANCELLED
-  copiedTxHash String? // Settlement transaction hash (available after SETTLED)
-  copiedAmount String // Amount we copied (USDC)
-  copiedPrice  String? // Price at which we executed
-  copiedShares String? // Number of shares we bought/sold
-  status       String    @default("pending") // pending, executed, failed, skipped, settled
-  errorMessage String?   @db.Text // Error message if failed
-  submittedAt  DateTime? // When order was submitted to CLOB
-  settledAt    DateTime? // When order was settled on-chain
-
-  // Trade outcome (filled when market resolves)
-  outcome         String? // "win", "loss", "pending", "cancelled"
-  pnl             String? // Profit/Loss in USDC (positive = profit, negative = loss)
-  resolvedAt      DateTime? // When market resolved
-  resolutionPrice String? // Final price when market resolved
-
-  // Current value tracking (for open positions)
-  currentPrice    String? // Current market price of the token
-  currentValue    String? // Current value of shares (shares * currentPrice)
-  unrealizedPnl   String? // Unrealized P/L for open positions (currentValue - costBasis)
-  costBasis       String? // Total cost basis (copiedAmount for buys)
-  lastPriceUpdate DateTime? // When current price was last updated
-
-  // Failure tracking
-  failureReason   String? @db.Text // Categorized failure reason (e.g., "insufficient_balance", "min_size", "market_closed")
-  failureCategory String? // Category: "balance", "validation", "execution", "market", "other"
-
-  // Redemption tracking
-  redemptionStatus String? // "pending", "redeemed", "failed", null if not applicable
-  redemptionTxHash String? // Transaction hash for redemption
-  redeemedAt       DateTime? // When position was redeemed
-  redemptionError  String? @db.Text // Error message if redemption failed
-
-  executedAt DateTime?
-  createdAt  DateTime  @default(now())
-
-  // userId index removed - query through config relationship instead
   @@index([configId])
   @@index([originalTxHash])
   @@index([status])
@@ -165,42 +125,35 @@ model CopiedTrade {
 
 model SupportedAsset {
   id             String   @id @default(uuid())
-  chainId        String // Chain ID (e.g., "1", "137", "10")
-  chainName      String // Human-readable chain name (e.g., "Ethereum", "Polygon")
-  tokenName      String // Token name (e.g., "USD Coin")
-  tokenSymbol    String // Token symbol (e.g., "USDC")
-  tokenAddress   String // Token contract address
-  tokenDecimals  Int // Token decimals
-  minCheckoutUsd Float // Minimum deposit amount in USD
-  lastSyncedAt   DateTime @default(now()) @updatedAt // When this asset was last synced from Polymarket API
+  chainId        String
+  chainName      String
+  tokenName      String
+  tokenSymbol    String
+  tokenAddress   String
+  tokenDecimals  Int
+  minCheckoutUsd Float
+  lastSyncedAt   DateTime @default(now()) @updatedAt
   createdAt      DateTime @default(now())
 
-  @@unique([chainId, tokenAddress]) // Each chain/token combination is unique
+  @@unique([chainId, tokenAddress])
   @@index([chainId])
   @@index([tokenSymbol])
 }
 
 model FetchedTrade {
-  id       String            @id @default(uuid())
-  configId String
-  config   CopyTradingConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  id             String            @id @default(uuid())
+  configId       String
+  originalTxHash String
+  traderAddress  String
+  marketId       String?
+  timestamp      String?
+  side           String?
+  processed      Boolean           @default(false)
+  skippedReason  String?
+  createdAt      DateTime          @default(now())
+  config         CopyTradingConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
 
-  // Trade identification
-  originalTxHash String // Transaction hash of the original trade (unique per config)
-  traderAddress  String // Address of the trader being copied
-
-  // Trade metadata (stored for reference)
-  marketId  String? // Polymarket market ID
-  timestamp String? // Trade timestamp
-  side      String? // "BUY" or "SELL"
-
-  // Processing status
-  processed     Boolean @default(false) // Whether this trade was processed (queued or skipped)
-  skippedReason String? @db.Text // Reason if skipped (e.g., "insufficient balance", "market closed")
-
-  createdAt DateTime @default(now())
-
-  @@unique([configId, originalTxHash]) // Each trade hash is unique per config
+  @@unique([configId, originalTxHash])
   @@index([configId])
   @@index([originalTxHash])
   @@index([processed])
@@ -208,104 +161,75 @@ model FetchedTrade {
 }
 
 model CopySignalConfig {
-  id     String @id @default(uuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  // Signal categories to copy
-  signalCategories String @db.Text // JSON array of signal categories to copy
-
-  // Trade type filters
-  copyBuyTrades  Boolean @default(true) // Copy buy trades
-  copySellTrades Boolean @default(true) // Copy sell trades
-
-  // Amount configuration
-  amountType String @default("fixed") // "fixed" or "percentage" or "percentageOfOriginal"
-  buyAmount  String // Amount per buy trade (USDC if fixed, percentage if percentage)
-  sellAmount String // Amount per sell trade (USDC if fixed, percentage if percentage)
-
-  // Trade amount range filters
-  minBuyAmount  String? // Minimum USDC amount of original buy trade to copy
-  maxBuyAmount  String? // Maximum USDC amount of original buy trade to copy
-  minSellAmount String? // Minimum USDC amount of original sell trade to copy
-  maxSellAmount String? // Maximum USDC amount of original sell trade to copy
-
-  // Market category filter
-  marketCategories String? @db.Text // JSON array of market categories to copy, null = all categories
-
-  // Status
-  enabled    Boolean @default(false) // Must be explicitly enabled after configuration
-  authorized Boolean @default(false) // User has authorized automated trading
-
-  // Execution settings
-  slippageTolerance String @default("0.05") // Slippage tolerance as decimal (0.05 = 5%)
-  maxRetries        Int    @default(3) // Maximum retry attempts for failed trades
-
-  // Metadata
-  createdAt  DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  copiedSignals CopiedSignal[]
+  id                  String         @id @default(uuid())
+  userId              String
+  signalCategories    String
+  copyBuyTrades       Boolean        @default(true)
+  copySellTrades      Boolean        @default(true)
+  amountType          String         @default("fixed")
+  buyAmount           String
+  sellAmount          String
+  minBuyAmount        String?
+  maxBuyAmount        String?
+  minSellAmount       String?
+  maxSellAmount       String?
+  marketCategories    String?
+  enabled             Boolean        @default(false)
+  authorized          Boolean        @default(false)
+  slippageTolerance   String         @default("0.05")
+  maxRetries          Int            @default(3)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  allocatedUSDCAmount String
+  usedUSDCAmount      String?        @default("0")
+  copiedSignals       CopiedSignal[]
+  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([enabled])
 }
 
 model CopiedSignal {
-  id       String           @id @default(uuid())
-  configId String
-  config   CopySignalConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
-
-  // Signal details
-  signalId       String // ID from external signal API
-  category       String // Signal category
-  originalTxHash String? // Transaction hash if available
-  marketId       String // Polymarket market ID
-  marketQuestion String? // Market question/title
-  outcomeIndex   Int // Which outcome (0 = NO, 1 = YES)
-  tradeType      String // "buy" or "sell"
-  originalAmount String // Original signal amount in USDC
-  originalPrice  String? // Price at which original signal was executed
-  originalShares String? // Number of shares in original signal
-
-  // Copied trade details (CLOB order tracking)
-  orderId      String?   @unique // CLOB order ID
-  orderStatus  String? // PENDING, OPEN, FILLED, SETTLED, CANCELLED
-  copiedTxHash String? // Settlement transaction hash (available after SETTLED)
-  copiedAmount String // Amount we copied (USDC)
-  copiedPrice  String? // Price at which we executed
-  copiedShares String? // Number of shares we bought/sold
-  status       String    @default("pending") // pending, executed, failed, skipped, settled
-  errorMessage String?   @db.Text // Error message if failed
-  submittedAt  DateTime? // When order was submitted to CLOB
-  settledAt    DateTime? // When order was settled on-chain
-
-  // Trade outcome (filled when market resolves)
-  outcome         String? // "win", "loss", "pending", "cancelled"
-  pnl             String? // Profit/Loss in USDC (positive = profit, negative = loss)
-  resolvedAt      DateTime? // When market resolved
-  resolutionPrice String? // Final price when market resolved
-
-  // Current value tracking (for open positions)
-  currentPrice    String? // Current market price of the token
-  currentValue    String? // Current value of shares (shares * currentPrice)
-  unrealizedPnl   String? // Unrealized P/L for open positions (currentValue - costBasis)
-  costBasis       String? // Total cost basis (copiedAmount for buys)
-  lastPriceUpdate DateTime? // When current price was last updated
-
-  // Failure tracking
-  failureReason   String? @db.Text // Categorized failure reason (e.g., "insufficient_balance", "min_size", "market_closed")
-  failureCategory String? // Category: "balance", "validation", "execution", "market", "other"
-
-  // Redemption tracking
-  redemptionStatus String? // "pending", "redeemed", "failed", null if not applicable
-  redemptionTxHash String? // Transaction hash for redemption
-  redeemedAt       DateTime? // When position was redeemed
-  redemptionError  String? @db.Text // Error message if redemption failed
-
-  executedAt DateTime?
-  createdAt  DateTime  @default(now())
+  id               String           @id @default(uuid())
+  configId         String
+  signalId         String
+  category         String
+  originalTxHash   String?
+  marketId         String
+  marketQuestion   String?
+  outcomeIndex     Int
+  tradeType        String
+  originalAmount   String
+  originalPrice    String?
+  originalShares   String?
+  orderId          String?          @unique
+  orderStatus      String?
+  copiedTxHash     String?
+  copiedAmount     String
+  copiedPrice      String?
+  copiedShares     String?
+  status           String           @default("pending")
+  errorMessage     String?
+  submittedAt      DateTime?
+  settledAt        DateTime?
+  outcome          String?
+  pnl              String?
+  resolvedAt       DateTime?
+  resolutionPrice  String?
+  currentPrice     String?
+  currentValue     String?
+  unrealizedPnl    String?
+  costBasis        String?
+  lastPriceUpdate  DateTime?
+  failureReason    String?
+  failureCategory  String?
+  redemptionStatus String?
+  redemptionTxHash String?
+  redeemedAt       DateTime?
+  redemptionError  String?
+  executedAt       DateTime?
+  createdAt        DateTime         @default(now())
+  config           CopySignalConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
 
   @@index([configId])
   @@index([signalId])
@@ -313,4 +237,12 @@ model CopiedSignal {
   @@index([status])
   @@index([outcome])
   @@index([executedAt])
+}
+
+model adminjs_session {
+  sid    String   @id(map: "session_pkey") @db.VarChar
+  sess   Json     @db.Json
+  expire DateTime @db.Timestamp(6)
+
+  @@index([expire], map: "IDX_session_expire")
 }

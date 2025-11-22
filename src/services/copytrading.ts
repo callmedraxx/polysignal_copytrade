@@ -2,6 +2,7 @@ import { prisma } from '../config/database';
 import { verifyTrader, TraderInfo } from './polymarket';
 import { ethers } from 'ethers';
 import { getUserLogger } from '../utils/user-logger';
+import { getUserBalance } from './balance';
 
 export interface CopyTradingConfigInput {
   targetTraderAddress: string;
@@ -18,6 +19,7 @@ export interface CopyTradingConfigInput {
   maxBuyTradesPerDay?: number | null;
   durationDays?: number | null;
   configName?: string | null;
+  allocatedUSDCAmount: string; // Required: Amount of USDC to allocate to this config
 }
 
 export interface CopyTradingConfigResponse {
@@ -43,6 +45,8 @@ export interface CopyTradingConfigResponse {
   startDate?: Date;
   configName?: string;
   traderInfo?: TraderInfo;
+  allocatedUSDCAmount: string;
+  usedUSDCAmount: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -74,6 +78,8 @@ function mapConfigToResponse(config: any): CopyTradingConfigResponse {
     startDate: config.startDate || undefined,
     configName: config.configName || undefined,
     traderInfo: config.traderInfo ? JSON.parse(config.traderInfo) : undefined,
+    allocatedUSDCAmount: config.allocatedUSDCAmount,
+    usedUSDCAmount: config.usedUSDCAmount || '0',
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   };
@@ -99,32 +105,89 @@ export async function createCopyTradingConfig(
     throw new Error('Trader not found on Polymarket or has no trading history');
   }
 
+  // Validate at least one trade type is enabled
+  if (!input.copyBuyTrades && !input.copySellTrades) {
+    throw new Error('At least one trade type (buy or sell) must be enabled');
+  }
+
   // Validate amount inputs
   if (input.amountType === 'fixed') {
     // Fixed amounts should be positive numbers
     const buyAmount = parseFloat(input.buyAmount);
-    const sellAmount = parseFloat(input.sellAmount);
     if (isNaN(buyAmount) || buyAmount <= 0) {
       throw new Error('Buy amount must be a positive number');
     }
-    if (isNaN(sellAmount) || sellAmount <= 0) {
-      throw new Error('Sell amount must be a positive number');
+    // Only validate sellAmount if copySellTrades is enabled
+    if (input.copySellTrades) {
+      if (!input.sellAmount) {
+        throw new Error('sellAmount is required when copySellTrades is true');
+      }
+      const sellAmount = parseFloat(input.sellAmount);
+      if (isNaN(sellAmount) || sellAmount <= 0) {
+        throw new Error('Sell amount must be a positive number');
+      }
     }
   } else if (input.amountType === 'percentage' || input.amountType === 'percentageOfOriginal') {
     // Percentages should be between 0 and 100
     const buyPercent = parseFloat(input.buyAmount);
-    const sellPercent = parseFloat(input.sellAmount);
     if (isNaN(buyPercent) || buyPercent <= 0 || buyPercent > 100) {
       throw new Error('Buy percentage must be between 0 and 100');
     }
-    if (isNaN(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
-      throw new Error('Sell percentage must be between 0 and 100');
+    // Only validate sellAmount if copySellTrades is enabled
+    if (input.copySellTrades) {
+      if (!input.sellAmount) {
+        throw new Error('sellAmount is required when copySellTrades is true');
+      }
+      const sellPercent = parseFloat(input.sellAmount);
+      if (isNaN(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
+        throw new Error('Sell percentage must be between 0 and 100');
+      }
     }
   }
 
-  // Validate at least one trade type is enabled
-  if (!input.copyBuyTrades && !input.copySellTrades) {
-    throw new Error('At least one trade type (buy or sell) must be enabled');
+  // Validate allocatedUSDCAmount
+  if (!input.allocatedUSDCAmount) {
+    throw new Error('allocatedUSDCAmount is required');
+  }
+  const allocatedAmount = parseFloat(input.allocatedUSDCAmount);
+  if (isNaN(allocatedAmount) || allocatedAmount <= 0) {
+    throw new Error('allocatedUSDCAmount must be a positive number');
+  }
+
+  // Get user balance and validate allocation
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  if (!user.proxyWallet) {
+    throw new Error('User does not have a proxy wallet');
+  }
+
+  // Get user balance from proxy wallet
+  const balanceResult = await getUserBalance(user.address);
+  const userBalance = parseFloat(balanceResult.balance || '0');
+  
+  if (allocatedAmount > userBalance) {
+    throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds user balance (${userBalance})`);
+  }
+
+  // Calculate remaining balance (balance - sum of all other config allocations)
+  const allConfigs = await prisma.copyTradingConfig.findMany({
+    where: { userId },
+  });
+  
+  const totalAllocated = allConfigs.reduce((sum, config) => {
+    return sum + parseFloat(config.allocatedUSDCAmount || '0');
+  }, 0);
+  
+  const remainingBalance = userBalance - totalAllocated;
+  
+  if (allocatedAmount > remainingBalance) {
+    throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds remaining balance (${remainingBalance}). Total already allocated: ${totalAllocated}`);
   }
 
   // Validate amount ranges if provided
@@ -153,11 +216,8 @@ export async function createCopyTradingConfig(
     throw new Error('You already have a copy trading configuration for this trader');
   }
 
-  // Get user for logging
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-  });
-  const userLogger = getUserLogger(user?.address || userId);
+  // Get user logger
+  const userLogger = getUserLogger(user.address);
 
   // Prepare data for creation
   const configData: any = {
@@ -167,7 +227,8 @@ export async function createCopyTradingConfig(
     copySellTrades: input.copySellTrades,
     amountType: input.amountType,
     buyAmount: input.buyAmount,
-    sellAmount: input.sellAmount,
+    // sellAmount is required in schema, so use a default value if copySellTrades is false
+    sellAmount: input.copySellTrades ? input.sellAmount : (input.sellAmount || '0'),
     minBuyAmount: input.minBuyAmount,
     maxBuyAmount: input.maxBuyAmount,
     minSellAmount: input.minSellAmount,
@@ -178,6 +239,8 @@ export async function createCopyTradingConfig(
     authorized: false, // Must be authorized separately
     status: 'active', // Default status
     tradesCountToday: 0,
+    allocatedUSDCAmount: input.allocatedUSDCAmount,
+    usedUSDCAmount: '0', // Start with zero usage
   };
 
   // Add optional fields if provided
@@ -302,6 +365,48 @@ export async function updateCopyTradingConfig(
     updateData.marketCategories = updates.marketCategories
       ? JSON.stringify(updates.marketCategories)
       : null;
+  }
+  if (updates.allocatedUSDCAmount !== undefined) {
+    // Validate allocatedUSDCAmount if being updated
+    const allocatedAmount = parseFloat(updates.allocatedUSDCAmount);
+    if (isNaN(allocatedAmount) || allocatedAmount <= 0) {
+      throw new Error('allocatedUSDCAmount must be a positive number');
+    }
+
+    // Get user balance and validate allocation
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+    
+    if (!user || !user.proxyWallet) {
+      throw new Error('User not found or does not have a proxy wallet');
+    }
+
+    const balanceResult = await getUserBalance(user.address);
+    const userBalance = parseFloat(balanceResult.balance || '0');
+    
+    if (allocatedAmount > userBalance) {
+      throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds user balance (${userBalance})`);
+    }
+
+    // Calculate remaining balance (balance - sum of all other config allocations, excluding current config)
+    const allConfigs = await prisma.copyTradingConfig.findMany({
+      where: { userId },
+    });
+    
+    const totalAllocated = allConfigs
+      .filter(config => config.id !== configId)
+      .reduce((sum, config) => {
+        return sum + parseFloat(config.allocatedUSDCAmount || '0');
+      }, 0);
+    
+    const remainingBalance = userBalance - totalAllocated;
+    
+    if (allocatedAmount > remainingBalance) {
+      throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds remaining balance (${remainingBalance}). Total already allocated: ${totalAllocated}`);
+    }
+
+    updateData.allocatedUSDCAmount = updates.allocatedUSDCAmount;
   }
 
   // Validate at least one trade type is enabled
@@ -754,30 +859,42 @@ export async function prepareConfigWithAuthorization(
     throw new Error('Trader not found on Polymarket or has no trading history');
   }
 
-  // Validate amount inputs (same validation as createCopyTradingConfig)
-  if (input.amountType === 'fixed') {
-    const buyAmount = parseFloat(input.buyAmount);
-    const sellAmount = parseFloat(input.sellAmount);
-    if (isNaN(buyAmount) || buyAmount <= 0) {
-      throw new Error('Buy amount must be a positive number');
-    }
-    if (isNaN(sellAmount) || sellAmount <= 0) {
-      throw new Error('Sell amount must be a positive number');
-    }
-  } else if (input.amountType === 'percentage' || input.amountType === 'percentageOfOriginal') {
-    const buyPercent = parseFloat(input.buyAmount);
-    const sellPercent = parseFloat(input.sellAmount);
-    if (isNaN(buyPercent) || buyPercent <= 0 || buyPercent > 100) {
-      throw new Error('Buy percentage must be between 0 and 100');
-    }
-    if (isNaN(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
-      throw new Error('Sell percentage must be between 0 and 100');
-    }
-  }
-
   // Validate at least one trade type is enabled
   if (!input.copyBuyTrades && !input.copySellTrades) {
     throw new Error('At least one trade type (buy or sell) must be enabled');
+  }
+
+  // Validate amount inputs (same validation as createCopyTradingConfig)
+  if (input.amountType === 'fixed') {
+    const buyAmount = parseFloat(input.buyAmount);
+    if (isNaN(buyAmount) || buyAmount <= 0) {
+      throw new Error('Buy amount must be a positive number');
+    }
+    // Only validate sellAmount if copySellTrades is enabled
+    if (input.copySellTrades) {
+      if (!input.sellAmount) {
+        throw new Error('sellAmount is required when copySellTrades is true');
+      }
+      const sellAmount = parseFloat(input.sellAmount);
+      if (isNaN(sellAmount) || sellAmount <= 0) {
+        throw new Error('Sell amount must be a positive number');
+      }
+    }
+  } else if (input.amountType === 'percentage' || input.amountType === 'percentageOfOriginal') {
+    const buyPercent = parseFloat(input.buyAmount);
+    if (isNaN(buyPercent) || buyPercent <= 0 || buyPercent > 100) {
+      throw new Error('Buy percentage must be between 0 and 100');
+    }
+    // Only validate sellAmount if copySellTrades is enabled
+    if (input.copySellTrades) {
+      if (!input.sellAmount) {
+        throw new Error('sellAmount is required when copySellTrades is true');
+      }
+      const sellPercent = parseFloat(input.sellAmount);
+      if (isNaN(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
+        throw new Error('Sell percentage must be between 0 and 100');
+      }
+    }
   }
 
   // Validate amount ranges if provided
@@ -808,19 +925,16 @@ export async function prepareConfigWithAuthorization(
     }
   }
 
-  // Check if user already has a config for this trader
-  const existingConfig = await prisma.copyTradingConfig.findFirst({
-    where: {
-      userId,
-      targetTraderAddress: ethers.utils.getAddress(input.targetTraderAddress.toLowerCase()),
-    },
-  });
-
-  if (existingConfig) {
-    throw new Error('You already have a copy trading configuration for this trader');
+  // Validate allocatedUSDCAmount
+  if (!input.allocatedUSDCAmount) {
+    throw new Error('allocatedUSDCAmount is required');
+  }
+  const allocatedAmount = parseFloat(input.allocatedUSDCAmount);
+  if (isNaN(allocatedAmount) || allocatedAmount <= 0) {
+    throw new Error('allocatedUSDCAmount must be a positive number');
   }
 
-  // Get user's proxy wallet
+  // Get user's proxy wallet and validate allocation
   const user = await prisma.user.findUnique({
     where: { id: userId },
   });
@@ -833,9 +947,43 @@ export async function prepareConfigWithAuthorization(
     throw new Error('User does not have a proxy wallet. Please complete signup first.');
   }
 
+  // Get user balance and validate allocation
+  const balanceResult = await getUserBalance(user.address);
+  const userBalance = parseFloat(balanceResult.balance || '0');
+  
+  if (allocatedAmount > userBalance) {
+    throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds user balance (${userBalance})`);
+  }
+
+  // Calculate remaining balance (balance - sum of all other config allocations)
+  const allConfigs = await prisma.copyTradingConfig.findMany({
+    where: { userId },
+  });
+  
+  const totalAllocated = allConfigs.reduce((sum, config) => {
+    return sum + parseFloat(config.allocatedUSDCAmount || '0');
+  }, 0);
+  
+  const remainingBalance = userBalance - totalAllocated;
+  
+  if (allocatedAmount > remainingBalance) {
+    throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds remaining balance (${remainingBalance}). Total already allocated: ${totalAllocated}`);
+  }
+
+  // Check if user already has a config for this trader
+  const existingConfig = await prisma.copyTradingConfig.findFirst({
+    where: {
+      userId,
+      targetTraderAddress: ethers.utils.getAddress(input.targetTraderAddress.toLowerCase()),
+    },
+  });
+
+  if (existingConfig) {
+    throw new Error('You already have a copy trading configuration for this trader');
+  }
+
   // Authorization is no longer required - derived wallets handle everything via CLOB client
   // Skip relayer authorization check for backward compatibility
-  console.log(`✅ Skipping relayer authorization check. Derived wallets handle all operations via CLOB client.`);
   
   return {
     configData: input, // Return validated config data for later use
@@ -873,7 +1021,6 @@ export async function createConfigWithAuthorization(
 
   // Authorization is no longer required - derived wallets handle everything via CLOB client
   // Skip relayer authorization check and create config directly
-  console.log('✅ Skipping relayer authorization check. Derived wallets handle all operations via CLOB client.');
   
   // Create config directly (no authorization needed)
   const config = await createCopyTradingConfig(userId, configData);

@@ -24,7 +24,8 @@
     "test:deposit-api": "tsx scripts/test-deposit-api-direct.ts",
     "get:solana-address": "tsx scripts/get-solana-deposit-address.ts",
     "test:unified-deposit": "tsx scripts/test-unified-deposit.ts",
-    "test:deposit-monitoring": "tsx scripts/test-deposit-monitoring.ts"
+    "test:deposit-monitoring": "tsx scripts/test-deposit-monitoring.ts",
+    "test:full-buy-flow": "tsx scripts/test-full-buy-flow.ts"
   },
   "keywords": [],
   "author": "",
@@ -56,6 +57,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node-cron": "^3.0.11",
     "adminjs": "^6.8.7",
+    "axios": "^1.13.2",
     "bull": "^4.16.5",
     "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.5",

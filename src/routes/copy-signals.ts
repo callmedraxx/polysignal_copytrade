@@ -91,13 +91,20 @@ router.post('/config', authenticateToken, async (req: AuthRequest, res: Response
       minSellAmount,
       maxSellAmount,
       marketCategories,
+      allocatedUSDCAmount,
     } = req.body;
 
     // Validate required fields
     if (!signalCategories || !Array.isArray(signalCategories) || signalCategories.length === 0 ||
         copyBuyTrades === undefined || copySellTrades === undefined ||
-        !amountType || !buyAmount || !sellAmount) {
+        !amountType || !buyAmount || !allocatedUSDCAmount) {
       res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+    
+    // sellAmount is required only if copySellTrades is true
+    if (copySellTrades && !sellAmount) {
+      res.status(400).json({ error: 'sellAmount is required when copySellTrades is true' });
       return;
     }
 
@@ -113,6 +120,7 @@ router.post('/config', authenticateToken, async (req: AuthRequest, res: Response
       minSellAmount,
       maxSellAmount,
       marketCategories,
+      allocatedUSDCAmount,
     });
 
     res.json(config);

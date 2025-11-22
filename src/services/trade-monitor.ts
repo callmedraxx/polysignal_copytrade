@@ -350,7 +350,6 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
     );
 
     if (!amountValidation.isValid) {
-      console.log(`Skipping trade ${trade.transactionHash}: ${amountValidation.reason}`);
       continue;
     }
 
@@ -366,7 +365,6 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
     if (!marketOpen) {
       const skipReason = `market ${marketSlug} is closed or not accepting orders`;
       skippedClosed++;
-      console.log(`⏭️ Skipping trade ${trade.transactionHash}: ${skipReason}`);
       
       // Mark as processed with skip reason (only in production)
       if (isProduction) {
@@ -400,7 +398,6 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         if (errorMessage.includes('orderbook') && errorMessage.includes('does not exist')) {
           skippedClosed++;
-          console.log(`⏭️ Skipping trade ${trade.transactionHash}: orderbook does not exist for token ${trade.asset}`);
           continue;
         }
         // For other errors, log but continue (might be temporary API issue)
@@ -412,10 +409,6 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
 
     // Validate market category
     if (!validateMarketCategory(trade.eventSlug, copyConfig)) {
-      const { inferCategories } = await import('./category-inference');
-      const inferred = inferCategories(trade.eventSlug);
-      const inferredStr = inferred.length > 0 ? ` (inferred: ${inferred.join(', ')})` : '';
-      console.log(`Skipping trade ${trade.transactionHash}: category "${trade.eventSlug}"${inferredStr} not in allowed categories`);
       continue;
     }
 
@@ -428,7 +421,6 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
         });
 
         if (!user || !user.proxyWallet) {
-          console.log(`⏭️ Skipping sell trade ${trade.transactionHash}: user not found or no proxy wallet`);
           continue;
         }
 
@@ -467,12 +459,6 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
         );
 
         if (!balanceCheck.hasBalance) {
-          const currentBalanceFormatted = ethers.utils.formatUnits(balanceCheck.currentBalance, 18);
-          const requiredBalanceFormatted = ethers.utils.formatUnits(balanceCheck.requiredBalance, 18);
-          console.log(
-            `⏭️ Skipping sell trade ${trade.transactionHash}: insufficient token balance. ` +
-            `Required: ${requiredBalanceFormatted} tokens, Available: ${currentBalanceFormatted} tokens`
-          );
           skippedClosed++; // Reuse skippedClosed counter for balance issues
           continue;
         }
@@ -481,6 +467,21 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
         console.warn(`⚠️ Could not check token balance for sell trade ${trade.transactionHash}: ${errorMessage}`);
         // Continue anyway - the balance check in executor will catch it
       }
+    }
+
+    // Check if this trade has already been copied (race condition protection)
+    // This prevents duplicate trades if two monitor runs happen simultaneously
+    const existingCopiedTrade = await prisma.copiedTrade.findFirst({
+      where: {
+        configId: copyConfig.id,
+        originalTxHash: trade.transactionHash.toLowerCase(),
+      },
+    });
+
+    if (existingCopiedTrade) {
+      // Trade already exists - skip creating duplicate
+      skippedProcessed++;
+      continue;
     }
 
     // Mark fetched trade as processed (only in production)
@@ -501,24 +502,46 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
       }
     }
 
-    // Create copied trade record
-    // Note: userId column doesn't exist - link through configId instead
-    const copiedTrade = await prisma.copiedTrade.create({
-      data: {
-        configId: copyConfig.id,
-        originalTrader: traderAddress,
-        originalTxHash: trade.transactionHash,
-        marketId: trade.conditionId,
-        marketQuestion: trade.title,
-        outcomeIndex: trade.outcomeIndex,
-        tradeType: tradeType,
-        originalAmount: typeof trade.usdcSize === 'string' ? trade.usdcSize : String(trade.usdcSize),
-        originalPrice: trade.price.toString(),
-        originalShares: trade.size ? String(trade.size) : null, // Number of shares in original trade
-        copiedAmount: '0', // Will be calculated during execution
-        status: 'pending',
-      },
-    });
+    // Create copied trade record with race condition protection
+    // Use findFirst + create pattern to handle concurrent requests
+    let copiedTrade;
+    try {
+      copiedTrade = await prisma.copiedTrade.create({
+        data: {
+          configId: copyConfig.id,
+          originalTrader: traderAddress,
+          originalTxHash: trade.transactionHash.toLowerCase(),
+          marketId: trade.conditionId,
+          marketQuestion: trade.title,
+          outcomeIndex: trade.outcomeIndex,
+          tradeType: tradeType,
+          originalAmount: typeof trade.usdcSize === 'string' ? trade.usdcSize : String(trade.usdcSize),
+          originalPrice: trade.price.toString(),
+          originalShares: trade.size ? String(trade.size) : null, // Number of shares in original trade
+          copiedAmount: '0', // Will be calculated during execution
+          status: 'pending',
+        },
+      });
+    } catch (createError: any) {
+      // If trade was created by another concurrent run, skip it
+      if (createError?.code === 'P2002') { // Prisma unique constraint violation
+        skippedProcessed++;
+        continue;
+      }
+      // Check again if it exists now (race condition)
+      const duplicateCheck = await prisma.copiedTrade.findFirst({
+        where: {
+          configId: copyConfig.id,
+          originalTxHash: trade.transactionHash.toLowerCase(),
+        },
+      });
+      if (duplicateCheck) {
+        skippedProcessed++;
+        continue;
+      }
+      // Re-throw if it's a different error
+      throw createError;
+    }
 
     // Log trade copy event
     const userLogger = getUserLogger(copyConfig.user.address);
@@ -536,8 +559,19 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
       }
     );
 
-    // Queue trade for execution
+    // Queue trade for execution with race condition protection
+    // Bull queue will automatically handle duplicate jobIds, but we check anyway
     try {
+      const jobId = `trade-${trade.transactionHash.toLowerCase()}-${copyConfig.id}`;
+      
+      // Check if job already exists in queue
+      const existingJob = await tradeExecutionQueue.getJob(jobId);
+      if (existingJob) {
+        console.log(`⏭️ Job ${jobId} already exists in queue, skipping duplicate queue...`);
+        skippedProcessed++;
+        continue;
+      }
+
       await tradeExecutionQueue.add(
         'execute-trade',
         {
@@ -546,7 +580,7 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
           originalTrade: trade,
         },
         {
-          jobId: `trade-${trade.transactionHash}-${copyConfig.id}`, // Unique job ID
+          jobId: jobId, // Unique job ID - Bull will prevent duplicates
           removeOnComplete: true,
         }
       );
@@ -560,6 +594,12 @@ async function processConfigTrades(copyConfig: any): Promise<number> {
         console.warn(`⚠️ Could not queue trade ${trade.transactionHash} for config ${copyConfig.id}: Redis unavailable. Trade record created but not queued.`);
         // Trade record is already created, so we can retry queueing later
         // For now, we'll skip incrementing queuedCount but keep the trade record
+        continue;
+      }
+      // Handle duplicate job ID (race condition)
+      if (queueError?.message?.includes('already exists') || 
+          queueError?.code === 'DUPLICATE_JOB') {
+        skippedProcessed++;
         continue;
       }
       // Re-throw other errors

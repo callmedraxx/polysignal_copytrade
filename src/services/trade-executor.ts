@@ -56,7 +56,6 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
             errorMessage: 'Copy trading is disabled or not authorized',
           },
         });
-        console.log(`⏭️ Trade ${tradeId} skipped: Copy trading disabled or not authorized`);
       } catch (updateError) {
         console.error(`❌ Failed to update trade ${tradeId} status to 'skipped':`, updateError);
         // Continue anyway - don't block execution
@@ -74,7 +73,27 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
             errorMessage: `Copy trading is ${copyConfig.status}`,
           },
         });
-        console.log(`⏭️ Trade ${tradeId} skipped: Copy trading status is ${copyConfig.status}`);
+      } catch (updateError) {
+        console.error(`❌ Failed to update trade ${tradeId} status to 'skipped':`, updateError);
+      }
+      return;
+    }
+
+    // Check if config has exceeded allocated USDC amount
+    const allocatedAmount = parseFloat(copyConfig.allocatedUSDCAmount || '0');
+    const usedAmount = parseFloat(copyConfig.usedUSDCAmount || '0');
+    
+    if (usedAmount >= allocatedAmount) {
+      try {
+        await prisma.copiedTrade.update({
+          where: { id: tradeId },
+          data: {
+            status: 'skipped',
+            errorMessage: `Config has used up allocated USDC amount (${usedAmount}/${allocatedAmount})`,
+            failureReason: 'allocated_amount_exhausted',
+            failureCategory: 'balance',
+          },
+        });
       } catch (updateError) {
         console.error(`❌ Failed to update trade ${tradeId} status to 'skipped':`, updateError);
       }
@@ -109,7 +128,6 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
               errorMessage: 'Copy trading duration has expired',
             },
           });
-          console.log(`⏭️ Trade ${tradeId} skipped: Duration expired`);
         } catch (updateError) {
           console.error(`❌ Failed to update trade ${tradeId} status:`, updateError);
         }
@@ -164,7 +182,6 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
                 errorMessage: `Maximum buy trades per day reached (${refreshedConfig.tradesCountToday}/${refreshedConfig.maxBuyTradesPerDay})`,
               },
             });
-            console.log(`⏭️ Trade ${tradeId} skipped: Max buy trades per day reached`);
           } catch (updateError) {
             console.error(`❌ Failed to update trade ${tradeId} status:`, updateError);
           }
@@ -346,17 +363,39 @@ export async function executeTrade(jobData: TradeExecutionJob): Promise<void> {
 
     // Update trade record with order submission result
     // Note: txHash will be updated later when order settles
+    // Update usedUSDCAmount for buy trades (only count buy trades as they consume USDC)
     try {
+      const tradeAmount = parseFloat(positionSize.amount);
+      const currentUsedAmount = parseFloat(copyConfig.usedUSDCAmount || '0');
+      
+      // Update usedUSDCAmount for buy trades (sell trades return USDC, so don't count them)
+      const updateData: any = {
+        orderId: executionResult.orderId,
+        orderStatus: executionResult.status,
+        status: 'pending', // Changed from 'executed' - order is pending settlement
+        submittedAt: new Date(),
+        // copiedTxHash will be set when order settles
+        // executedAt will be set when order settles
+      };
+
+      // Only increment usedUSDCAmount for buy trades
+      if (copiedTrade.tradeType === 'buy') {
+        const newUsedAmount = (currentUsedAmount + tradeAmount).toFixed(6);
+        
+        // Update config's usedUSDCAmount
+        await prisma.copyTradingConfig.update({
+          where: { id: configId },
+          data: {
+            usedUSDCAmount: newUsedAmount,
+          },
+        });
+        
+        console.log(`💰 Updated usedUSDCAmount for config ${configId}: ${currentUsedAmount} -> ${newUsedAmount} (allocated: ${allocatedAmount})`);
+      }
+
       await prisma.copiedTrade.update({
         where: { id: tradeId },
-        data: {
-          orderId: executionResult.orderId,
-          orderStatus: executionResult.status,
-          status: 'pending', // Changed from 'executed' - order is pending settlement
-          submittedAt: new Date(),
-          // copiedTxHash will be set when order settles
-          // executedAt will be set when order settles
-        },
+        data: updateData,
       });
       console.log(`✅ Trade ${tradeId} order submitted to CLOB: ${executionResult.orderId}`);
       

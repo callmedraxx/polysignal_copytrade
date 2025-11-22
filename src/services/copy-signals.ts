@@ -1,4 +1,5 @@
 import { prisma } from '../config/database';
+import { getUserBalance } from './balance';
 
 export interface CopySignalConfigInput {
   signalCategories: string[];
@@ -12,6 +13,7 @@ export interface CopySignalConfigInput {
   minSellAmount?: string;
   maxSellAmount?: string;
   marketCategories?: string[];
+  allocatedUSDCAmount: string; // Required: Amount of USDC to allocate to this config
 }
 
 export interface CopySignalConfigResponse {
@@ -29,6 +31,8 @@ export interface CopySignalConfigResponse {
   marketCategories?: string[];
   enabled: boolean;
   authorized: boolean;
+  allocatedUSDCAmount: string;
+  usedUSDCAmount: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,30 +49,97 @@ export async function createCopySignalConfig(
     throw new Error('At least one signal category must be specified');
   }
 
-  // Validate amount inputs
-  if (input.amountType === 'fixed') {
-    const buyAmount = parseFloat(input.buyAmount);
-    const sellAmount = parseFloat(input.sellAmount);
-    if (isNaN(buyAmount) || buyAmount <= 0) {
-      throw new Error('Buy amount must be a positive number');
-    }
-    if (isNaN(sellAmount) || sellAmount <= 0) {
-      throw new Error('Sell amount must be a positive number');
-    }
-  } else if (input.amountType === 'percentage' || input.amountType === 'percentageOfOriginal') {
-    const buyPercent = parseFloat(input.buyAmount);
-    const sellPercent = parseFloat(input.sellAmount);
-    if (isNaN(buyPercent) || buyPercent <= 0 || buyPercent > 100) {
-      throw new Error('Buy percentage must be between 0 and 100');
-    }
-    if (isNaN(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
-      throw new Error('Sell percentage must be between 0 and 100');
-    }
-  }
-
   // Validate at least one trade type is enabled
   if (!input.copyBuyTrades && !input.copySellTrades) {
     throw new Error('At least one trade type (buy or sell) must be enabled');
+  }
+
+  // Validate amount inputs
+  if (input.amountType === 'fixed') {
+    const buyAmount = parseFloat(input.buyAmount);
+    if (isNaN(buyAmount) || buyAmount <= 0) {
+      throw new Error('Buy amount must be a positive number');
+    }
+    // Only validate sellAmount if copySellTrades is enabled
+    if (input.copySellTrades) {
+      if (!input.sellAmount) {
+        throw new Error('sellAmount is required when copySellTrades is true');
+      }
+      const sellAmount = parseFloat(input.sellAmount);
+      if (isNaN(sellAmount) || sellAmount <= 0) {
+        throw new Error('Sell amount must be a positive number');
+      }
+    }
+  } else if (input.amountType === 'percentage' || input.amountType === 'percentageOfOriginal') {
+    const buyPercent = parseFloat(input.buyAmount);
+    if (isNaN(buyPercent) || buyPercent <= 0 || buyPercent > 100) {
+      throw new Error('Buy percentage must be between 0 and 100');
+    }
+    // Only validate sellAmount if copySellTrades is enabled
+    if (input.copySellTrades) {
+      if (!input.sellAmount) {
+        throw new Error('sellAmount is required when copySellTrades is true');
+      }
+      const sellPercent = parseFloat(input.sellAmount);
+      if (isNaN(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
+        throw new Error('Sell percentage must be between 0 and 100');
+      }
+    }
+  }
+
+  // Validate allocatedUSDCAmount
+  if (!input.allocatedUSDCAmount) {
+    throw new Error('allocatedUSDCAmount is required');
+  }
+  const allocatedAmount = parseFloat(input.allocatedUSDCAmount);
+  if (isNaN(allocatedAmount) || allocatedAmount <= 0) {
+    throw new Error('allocatedUSDCAmount must be a positive number');
+  }
+
+  // Get user balance and validate allocation
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+  
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  if (!user.proxyWallet) {
+    throw new Error('User does not have a proxy wallet');
+  }
+
+  // Get user balance from proxy wallet
+  const balanceResult = await getUserBalance(user.address);
+  const userBalance = parseFloat(balanceResult.balance || '0');
+  
+  if (allocatedAmount > userBalance) {
+    throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds user balance (${userBalance})`);
+  }
+
+  // Calculate remaining balance (balance - sum of all other config allocations)
+  // Include both copy trading and copy signal configs
+  const allTradingConfigs = await prisma.copyTradingConfig.findMany({
+    where: { userId },
+  });
+  
+  const allSignalConfigs = await prisma.copySignalConfig.findMany({
+    where: { userId },
+  });
+  
+  const totalAllocatedTrading = allTradingConfigs.reduce((sum, config) => {
+    return sum + parseFloat(config.allocatedUSDCAmount || '0');
+  }, 0);
+  
+  const totalAllocatedSignals = allSignalConfigs.reduce((sum, config) => {
+    return sum + parseFloat(config.allocatedUSDCAmount || '0');
+  }, 0);
+  
+  const totalAllocated = totalAllocatedTrading + totalAllocatedSignals;
+  const remainingBalance = userBalance - totalAllocated;
+  
+  if (allocatedAmount > remainingBalance) {
+    throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds remaining balance (${remainingBalance}). Total already allocated: ${totalAllocated}`);
   }
 
   // Validate amount ranges if provided
@@ -94,7 +165,8 @@ export async function createCopySignalConfig(
       copySellTrades: input.copySellTrades,
       amountType: input.amountType,
       buyAmount: input.buyAmount,
-      sellAmount: input.sellAmount,
+      // sellAmount is required in schema, so use a default value if copySellTrades is false
+      sellAmount: input.copySellTrades ? input.sellAmount : (input.sellAmount || '0'),
       minBuyAmount: input.minBuyAmount,
       maxBuyAmount: input.maxBuyAmount,
       minSellAmount: input.minSellAmount,
@@ -102,6 +174,8 @@ export async function createCopySignalConfig(
       marketCategories: input.marketCategories ? JSON.stringify(input.marketCategories) : null,
       enabled: false, // Must be explicitly enabled
       authorized: false, // Must be authorized separately
+      allocatedUSDCAmount: input.allocatedUSDCAmount,
+      usedUSDCAmount: '0', // Start with zero usage
     },
   });
 
@@ -120,6 +194,8 @@ export async function createCopySignalConfig(
     marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
     enabled: config.enabled,
     authorized: config.authorized,
+    allocatedUSDCAmount: config.allocatedUSDCAmount,
+    usedUSDCAmount: config.usedUSDCAmount || '0',
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   };
@@ -149,6 +225,8 @@ export async function getUserCopySignalConfigs(userId: string): Promise<CopySign
     marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
     enabled: config.enabled,
     authorized: config.authorized,
+    allocatedUSDCAmount: config.allocatedUSDCAmount,
+    usedUSDCAmount: config.usedUSDCAmount || '0',
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   }));
@@ -187,6 +265,8 @@ export async function getCopySignalConfig(
     marketCategories: config.marketCategories ? JSON.parse(config.marketCategories) : undefined,
     enabled: config.enabled,
     authorized: config.authorized,
+    allocatedUSDCAmount: config.allocatedUSDCAmount,
+    usedUSDCAmount: config.usedUSDCAmount || '0',
     createdAt: config.createdAt,
     updatedAt: config.updatedAt,
   };
@@ -253,6 +333,57 @@ export async function updateCopySignalConfig(
       ? JSON.stringify(updates.marketCategories)
       : null;
   }
+  if (updates.allocatedUSDCAmount !== undefined) {
+    // Validate allocatedUSDCAmount if being updated
+    const allocatedAmount = parseFloat(updates.allocatedUSDCAmount);
+    if (isNaN(allocatedAmount) || allocatedAmount <= 0) {
+      throw new Error('allocatedUSDCAmount must be a positive number');
+    }
+
+    // Get user balance and validate allocation
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+    
+    if (!user || !user.proxyWallet) {
+      throw new Error('User not found or does not have a proxy wallet');
+    }
+
+    const balanceResult = await getUserBalance(user.address);
+    const userBalance = parseFloat(balanceResult.balance || '0');
+    
+    if (allocatedAmount > userBalance) {
+      throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds user balance (${userBalance})`);
+    }
+
+    // Calculate remaining balance (balance - sum of all other config allocations, excluding current config)
+    const allTradingConfigs = await prisma.copyTradingConfig.findMany({
+      where: { userId },
+    });
+    
+    const allSignalConfigs = await prisma.copySignalConfig.findMany({
+      where: { userId },
+    });
+    
+    const totalAllocatedTrading = allTradingConfigs.reduce((sum, config) => {
+      return sum + parseFloat(config.allocatedUSDCAmount || '0');
+    }, 0);
+    
+    const totalAllocatedSignals = allSignalConfigs
+      .filter(config => config.id !== configId)
+      .reduce((sum, config) => {
+        return sum + parseFloat(config.allocatedUSDCAmount || '0');
+      }, 0);
+    
+    const totalAllocated = totalAllocatedTrading + totalAllocatedSignals;
+    const remainingBalance = userBalance - totalAllocated;
+    
+    if (allocatedAmount > remainingBalance) {
+      throw new Error(`allocatedUSDCAmount (${allocatedAmount}) exceeds remaining balance (${remainingBalance}). Total already allocated: ${totalAllocated}`);
+    }
+
+    updateData.allocatedUSDCAmount = updates.allocatedUSDCAmount;
+  }
 
   // Validate at least one trade type is enabled
   const finalCopyBuyTrades = updateData.copyBuyTrades ?? existingConfig.copyBuyTrades;
@@ -281,6 +412,8 @@ export async function updateCopySignalConfig(
     marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
     enabled: updatedConfig.enabled,
     authorized: updatedConfig.authorized,
+    allocatedUSDCAmount: updatedConfig.allocatedUSDCAmount,
+    usedUSDCAmount: updatedConfig.usedUSDCAmount || '0',
     createdAt: updatedConfig.createdAt,
     updatedAt: updatedConfig.updatedAt,
   };
@@ -328,6 +461,8 @@ export async function enableCopySignals(
     marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
     enabled: updatedConfig.enabled,
     authorized: updatedConfig.authorized,
+    allocatedUSDCAmount: updatedConfig.allocatedUSDCAmount,
+    usedUSDCAmount: updatedConfig.usedUSDCAmount || '0',
     createdAt: updatedConfig.createdAt,
     updatedAt: updatedConfig.updatedAt,
   };
@@ -389,6 +524,8 @@ export async function disableCopySignals(
     marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
     enabled: updatedConfig.enabled,
     authorized: updatedConfig.authorized,
+    allocatedUSDCAmount: updatedConfig.allocatedUSDCAmount,
+    usedUSDCAmount: updatedConfig.usedUSDCAmount || '0',
     createdAt: updatedConfig.createdAt,
     updatedAt: updatedConfig.updatedAt,
   };
@@ -432,6 +569,8 @@ export async function authorizeCopySignals(
     marketCategories: updatedConfig.marketCategories ? JSON.parse(updatedConfig.marketCategories) : undefined,
     enabled: updatedConfig.enabled,
     authorized: updatedConfig.authorized,
+    allocatedUSDCAmount: updatedConfig.allocatedUSDCAmount,
+    usedUSDCAmount: updatedConfig.usedUSDCAmount || '0',
     createdAt: updatedConfig.createdAt,
     updatedAt: updatedConfig.updatedAt,
   };

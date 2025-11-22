@@ -272,12 +272,19 @@ router.post('/config/prepare', authenticateToken, async (req: AuthRequest, res: 
       maxBuyTradesPerDay,
       durationDays,
       configName,
+      allocatedUSDCAmount,
     } = req.body;
 
     // Validate required fields
     if (!targetTraderAddress || copyBuyTrades === undefined || copySellTrades === undefined ||
-        !amountType || !buyAmount || !sellAmount) {
+        !amountType || !buyAmount) {
       res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+    
+    // sellAmount is required only if copySellTrades is true
+    if (copySellTrades && !sellAmount) {
+      res.status(400).json({ error: 'sellAmount is required when copySellTrades is true' });
       return;
     }
 
@@ -297,6 +304,7 @@ router.post('/config/prepare', authenticateToken, async (req: AuthRequest, res: 
       maxBuyTradesPerDay,
       durationDays,
       configName,
+      allocatedUSDCAmount,
     });
 
     res.json(result);
@@ -352,12 +360,19 @@ router.post('/config', authenticateToken, async (req: AuthRequest, res: Response
       maxBuyTradesPerDay,
       durationDays,
       configName,
+      allocatedUSDCAmount,
     } = req.body;
 
     // Validate required fields
     if (!targetTraderAddress || copyBuyTrades === undefined || copySellTrades === undefined ||
-        !amountType || !buyAmount || !sellAmount) {
+        !amountType || !buyAmount || !allocatedUSDCAmount) {
       res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+    
+    // sellAmount is required only if copySellTrades is true
+    if (copySellTrades && !sellAmount) {
+      res.status(400).json({ error: 'sellAmount is required when copySellTrades is true' });
       return;
     }
 
@@ -376,6 +391,7 @@ router.post('/config', authenticateToken, async (req: AuthRequest, res: Response
       maxBuyTradesPerDay,
       durationDays,
       configName,
+      allocatedUSDCAmount,
     });
 
     res.json(config);
@@ -617,7 +633,6 @@ router.post('/config/create-and-authorize', authenticateToken, async (req: AuthR
 
     // Authorization is no longer required - derived wallets handle everything via CLOB client
     // Skip relayer authorization check for backward compatibility
-    console.log('✅ Skipping relayer authorization check. Derived wallets handle all operations via CLOB client.');
 
     const { createConfigWithAuthorization } = await import('../services/copytrading');
     // Pass null since authorization is no longer needed

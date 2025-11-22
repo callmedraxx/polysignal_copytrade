@@ -46,21 +46,14 @@ export async function createClobClientForUser(userAddress: string): Promise<Clob
   }
   
   const funder = user.proxyWallet.toLowerCase();
-  console.log('funder', funder);
   
   // Derive wallet for this user (deterministic)
   const derivedWallet = deriveWalletForUser(normalizedUserAddress);
-  console.log('derivedWallet', derivedWallet);
   //const signer = new Wallet(derivedWallet.privateKey);
   const signer = derivedWallet;
-  console.log('signer', signer);
   
-  console.log(`🔑 Creating CLOB client for user : ${normalizedUserAddress}`);
-  console.log(`   Proxy wallet (funder/maker): ${funder}`);
-  console.log(`   Derived wallet (signer): ${derivedWallet.address}`);
-  console.log(`   Signature type: POLY_GNOSIS_SAFE (2) - allows signer to sign on behalf of Safe wallet`);
-  console.log(`   ⚠️  For POLY_GNOSIS_SAFE: The derived wallet (${derivedWallet.address}) must be an owner of the Safe (${funder})`);
-  console.log(`   ⚠️  The derived wallet may need to be registered with Polymarket before signing orders`);
+  // NOTE: Proxy is NOT used for API key creation - only for order execution
+  // API key creation should go directly to Polymarket without proxy to avoid issues
   
   let creds;
   try {
@@ -72,14 +65,12 @@ export async function createClobClientForUser(userAddress: string): Promise<Clob
     // The library logs errors internally when creation fails, but derivation usually succeeds
     // We suppress console errors temporarily to avoid noise from expected fallback behavior
     const originalError = console.error;
-    let libraryErrorLogged = false;
     
-    // Temporarily intercept console.error to detect if library logs an error
+    // Temporarily intercept console.error to suppress expected library errors
     console.error = (...args: any[]) => {
       const errorStr = JSON.stringify(args);
       if (errorStr.includes('[CLOB Client] request error') && 
           errorStr.includes('Could not create api key')) {
-        libraryErrorLogged = true;
         // Don't log this - it's expected when falling back to derivation
         return;
       }
@@ -101,12 +92,7 @@ export async function createClobClientForUser(userAddress: string): Promise<Clob
       );
     }
     
-    // Log success message, noting if it was derived vs created
-    if (libraryErrorLogged) {
-      console.log(`✅ API credentials derived for user ${normalizedUserAddress} (creation failed, derivation succeeded)`);
-    } else {
-      console.log(`✅ API credentials created for user ${normalizedUserAddress}`);
-    }
+          // API credentials obtained successfully
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     

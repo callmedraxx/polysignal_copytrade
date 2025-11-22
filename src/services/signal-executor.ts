@@ -61,6 +61,28 @@ export async function executeSignal(jobData: SignalExecutionJob): Promise<void> 
       return;
     }
 
+    // Check if config has exceeded allocated USDC amount
+    const allocatedAmount = parseFloat(signalConfig.allocatedUSDCAmount || '0');
+    const usedAmount = parseFloat(signalConfig.usedUSDCAmount || '0');
+    
+    if (usedAmount >= allocatedAmount) {
+      try {
+        await prisma.copiedSignal.update({
+          where: { id: signalId },
+          data: {
+            status: 'skipped',
+            errorMessage: `Config has used up allocated USDC amount (${usedAmount}/${allocatedAmount})`,
+            failureReason: 'allocated_amount_exhausted',
+            failureCategory: 'balance',
+          },
+        });
+        console.log(`⏭️ Signal ${signalId} skipped: Allocated USDC amount exhausted (${usedAmount}/${allocatedAmount})`);
+      } catch (updateError) {
+        console.error(`❌ Failed to update signal ${signalId} status to 'skipped':`, updateError);
+      }
+      return;
+    }
+
     // Calculate position size
     const positionSize = await calculatePositionSize(
       configId,
@@ -172,15 +194,37 @@ export async function executeSignal(jobData: SignalExecutionJob): Promise<void> 
     }
 
     // Update signal record with order submission result
+    // Update usedUSDCAmount for buy signals (only count buy signals as they consume USDC)
     try {
+      const tradeAmount = parseFloat(positionSize.amount);
+      const currentUsedAmount = parseFloat(signalConfig.usedUSDCAmount || '0');
+      
+      // Update usedUSDCAmount for buy signals (sell signals return USDC, so don't count them)
+      const updateData: any = {
+        orderId: executionResult.orderId,
+        orderStatus: executionResult.status,
+        status: 'pending', // Order is pending settlement
+        submittedAt: new Date(),
+      };
+
+      // Only increment usedUSDCAmount for buy signals
+      if (copiedSignal.tradeType === 'buy') {
+        const newUsedAmount = (currentUsedAmount + tradeAmount).toFixed(6);
+        
+        // Update config's usedUSDCAmount
+        await prisma.copySignalConfig.update({
+          where: { id: configId },
+          data: {
+            usedUSDCAmount: newUsedAmount,
+          },
+        });
+        
+        console.log(`💰 Updated usedUSDCAmount for config ${configId}: ${currentUsedAmount} -> ${newUsedAmount} (allocated: ${allocatedAmount})`);
+      }
+
       await prisma.copiedSignal.update({
         where: { id: signalId },
-        data: {
-          orderId: executionResult.orderId,
-          orderStatus: executionResult.status,
-          status: 'pending', // Order is pending settlement
-          submittedAt: new Date(),
-        },
+        data: updateData,
       });
       console.log(`✅ Signal ${signalId} order submitted to CLOB: ${executionResult.orderId}`);
       

@@ -45,8 +45,6 @@ export function deriveWalletForUser(userAddress: string): ethers.Wallet {
     const derivedWallet = ethers.Wallet.fromMnemonic(mnemonic, derivationPath);
     const connectedWallet = derivedWallet.connect(provider);
     
-    console.log(`   Derived wallet address: ${connectedWallet.address}`);
-    
     return connectedWallet;
 }
 
@@ -109,10 +107,6 @@ export async function isSafeDeployed(safeAddress: string): Promise<boolean> {
  */
 export function createRelayerClientForUser(userAddress: string): RelayClient {
     const derivedWallet = deriveWalletForUser(userAddress);
-    
-    
-    console.log(`🚀 Creating RelayerClient for user: ${userAddress}`);
-    console.log(`   Using derived wallet: ${derivedWallet.address}`);
     
     return new RelayClient(relayerUrl, chainId, derivedWallet, builderConfig);
 }

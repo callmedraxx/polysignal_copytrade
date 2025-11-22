@@ -9,6 +9,7 @@ import {
   submitOrder,
 } from './polymarket-clob';
 import { getClobClientForUser } from './clob-client-cache';
+import { saveProxyDataUsage } from './proxy-data-usage';
 
 // Removed USDC approval logic - CLOB handles approvals automatically via Safe wallets
 
@@ -31,6 +32,34 @@ export async function executeBuyTrade(
   maxPrice: number,
   slippageTolerance: number
 ): Promise<{ orderId: string; status: string; txHash?: string }> {
+  // Apply proxy patch for all CLOB API calls during buy trade execution
+  // This ensures createBuyOrder and submitOrder both use the proxy
+  const { applyClobProxyPatch } = await import('./polymarket-clob');
+  const { isClobProxyEnabled } = await import('../utils/proxy-agent');
+  const proxyPatch = applyClobProxyPatch();
+  
+  // Temporarily disable SSL verification for proxied CLOB requests
+  // This is necessary because the proxy intercepts HTTPS connections
+  // and presents its own SSL certificate (*.bc.pr.oxylabs.io), not the destination's certificate (clob.polymarket.com)
+  const originalRejectUnauthorized = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  let sslDisabled = false;
+  
+  // Detect proxy type
+  const proxyUrl = config.proxy?.clobProxyUrl || config.proxy?.url || '';
+  const isSocks5 = proxyUrl.startsWith('socks5://') || proxyUrl.startsWith('socks5h://') || proxyUrl.startsWith('socks://');
+  const proxyType = isSocks5 ? 'SOCKS5' : 'HTTPS';
+  
+  if (proxyPatch || isClobProxyEnabled()) {
+    // Disable SSL verification globally during buy trade execution when using proxy
+    // This ensures all HTTPS requests (including axios in CLOB client) bypass certificate verification
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    sslDisabled = true;
+    logger.info(`Temporarily disabled SSL verification for ${proxyType} proxied CLOB BUY order requests`, {
+      proxyEnabled: isClobProxyEnabled(),
+      sslDisabled: true,
+    });
+  }
+  
   try {
     // Initialize CLOB client for this user (gets proxy wallet from database)
     // Uses cache to avoid repeated API key creation
@@ -281,12 +310,46 @@ export async function executeBuyTrade(
       );
     }
 
-    logger.executor('Buy order submitted to CLOB', {
+    // Save proxy data usage if proxy was used
+    if (response.proxyDataUsage && response.proxyType) {
+      try {
+        await saveProxyDataUsage(
+          response.orderId,
+          response.proxyType,
+          response.proxyDataUsage
+        );
+        logger.executor('Proxy data usage saved for buy order', {
+          orderId: response.orderId,
+          proxyType: response.proxyType,
+          totalDataGB: response.proxyDataUsage.totalDataGB,
+        });
+      } catch (error) {
+        // Log error but don't fail the order submission
+        logger.warn('Failed to save proxy data usage for buy order', {
+          orderId: response.orderId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Log successful buy order submission with full details
+    logger.executor('Buy order submitted to CLOB successfully', {
       orderId: response.orderId,
       status: response.status,
       userAddress,
       marketId,
       tokenId,
+      response: response, // Include full response
+    });
+    
+    // Also log to console for better visibility
+    console.log('✅ Buy order successfully submitted to CLOB:', {
+      orderId: response.orderId,
+      status: response.status,
+      userAddress,
+      marketId,
+      tokenId,
+      fullResponse: JSON.stringify(response, null, 2),
     });
 
     return {
@@ -307,6 +370,20 @@ export async function executeBuyTrade(
       amountWei,
     });
     throw error;
+  } finally {
+    // Cleanup proxy patch and restore SSL verification
+    if (proxyPatch) {
+      proxyPatch.cleanup();
+    }
+    // Restore original SSL verification setting
+    if (sslDisabled) {
+      if (originalRejectUnauthorized !== undefined) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalRejectUnauthorized;
+      } else {
+        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      }
+      logger.debug('Restored SSL verification setting');
+    }
   }
 }
 
@@ -590,12 +667,46 @@ export async function executeSellTrade(
       );
     }
 
-    logger.executor('Sell order submitted to CLOB', {
+    // Save proxy data usage if proxy was used
+    if (response.proxyDataUsage && response.proxyType) {
+      try {
+        await saveProxyDataUsage(
+          response.orderId,
+          response.proxyType,
+          response.proxyDataUsage
+        );
+        logger.executor('Proxy data usage saved for sell order', {
+          orderId: response.orderId,
+          proxyType: response.proxyType,
+          totalDataGB: response.proxyDataUsage.totalDataGB,
+        });
+      } catch (error) {
+        // Log error but don't fail the order submission
+        logger.warn('Failed to save proxy data usage for sell order', {
+          orderId: response.orderId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Log successful sell order submission with full details
+    logger.executor('Sell order submitted to CLOB successfully', {
       orderId: response.orderId,
       status: response.status,
       userAddress,
       marketId,
       tokenId,
+      response: response, // Include full response
+    });
+    
+    // Also log to console for better visibility
+    console.log('✅ Sell order successfully submitted to CLOB:', {
+      orderId: response.orderId,
+      status: response.status,
+      userAddress,
+      marketId,
+      tokenId,
+      fullResponse: JSON.stringify(response, null, 2),
     });
 
     return {

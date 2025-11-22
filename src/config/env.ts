@@ -70,11 +70,12 @@ export const config = {
     apiUrl: process.env.TENDERLY_API_URL || '',
   },
   proxy: {
-    enabled: process.env.PROXY_ENABLED === 'true',
-    url: process.env.PROXY_URL || '',
+    // Only enable if explicitly set to 'true' (case-insensitive)
+    enabled: process.env.PROXY_ENABLED?.toLowerCase() === 'true',
+    url: (process.env.PROXY_URL || '').trim(),
     // CLOB-specific proxy override (for routing through local machine)
     // If set, this will be used for CLOB order submission instead of the general proxy
-    clobProxyUrl: process.env.CLOB_PROXY_URL || '',
+    clobProxyUrl: (process.env.CLOB_PROXY_URL || '').trim(),
     // Oxylabs specific (kept for future use)
     oxylabs: {
       username: process.env.OXYLABS_USERNAME || '',
